@@ -1,0 +1,189 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum RoleName {
+  ADMIN
+  DOCTOR
+  PATIENT
+}
+
+enum StudyStatus {
+  UPLOADED
+  IN_REVIEW
+  REPORTED
+  PUBLISHED
+}
+
+enum ReportStatus {
+  DRAFT
+  FINAL
+  SIGNED
+}
+
+model Role {
+  id    String   @id @default(cuid())
+  name  RoleName @unique
+  users User[]
+}
+
+model User {
+  id             String      @id @default(cuid())
+  email          String      @unique
+  passwordHash   String
+  firstName      String
+  lastName       String
+  isActive       Boolean     @default(true)
+  roleId         String
+  role           Role        @relation(fields: [roleId], references: [id])
+  doctorReports  Report[]    @relation("DoctorReports")
+  uploadedStudies Study[]    @relation("UploaderStudies")
+  assignedStudies Study[]    @relation("AssignedDoctor")
+  patientAccess  PatientPortalAccess?
+  auditLogs      AuditLog[]
+  notifications  Notification[]
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+}
+
+model Patient {
+  id               String               @id @default(cuid())
+  internalCode     String               @unique
+  firstName        String
+  lastName         String
+  documentId       String               @unique
+  dateOfBirth      DateTime
+  sex              String
+  email            String?
+  phone            String?
+  studies          Study[]
+  patientAccess    PatientPortalAccess?
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+}
+
+model Study {
+  id              String          @id @default(cuid())
+  patientId       String
+  patient         Patient         @relation(fields: [patientId], references: [id])
+  modality        String
+  studyDate       DateTime
+  status          StudyStatus     @default(UPLOADED)
+  description     String?
+  metadataJson    Json?
+  uploadedById    String
+  uploadedBy      User            @relation("UploaderStudies", fields: [uploadedById], references: [id])
+  assignedDoctorId String?
+  assignedDoctor  User?           @relation("AssignedDoctor", fields: [assignedDoctorId], references: [id])
+  series          StudySeries[]
+  dicomFiles      DicomFile[]
+  reports         Report[]
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+}
+
+model StudySeries {
+  id                String      @id @default(cuid())
+  studyId           String
+  study             Study       @relation(fields: [studyId], references: [id])
+  seriesInstanceUid String
+  seriesNumber      Int?
+  description       String?
+  modality          String?
+  dicomFiles        DicomFile[]
+  createdAt         DateTime    @default(now())
+}
+
+model DicomFile {
+  id              String      @id @default(cuid())
+  studyId         String
+  study           Study       @relation(fields: [studyId], references: [id])
+  seriesId        String?
+  series          StudySeries? @relation(fields: [seriesId], references: [id])
+  filePath        String
+  fileName        String
+  mimeType        String
+  fileSize        Int
+  sopInstanceUid  String?
+  instanceNumber  Int?
+  metadataJson    Json?
+  createdAt       DateTime    @default(now())
+}
+
+model Report {
+  id                String               @id @default(cuid())
+  studyId           String
+  study             Study                @relation(fields: [studyId], references: [id])
+  doctorId          String
+  doctor            User                 @relation("DoctorReports", fields: [doctorId], references: [id])
+  findings          String
+  conclusion        String
+  patientSummary    String?
+  status            ReportStatus         @default(DRAFT)
+  draftedAt         DateTime?            
+  finalizedAt       DateTime?
+  pdfPath           String?
+  measurements      ReportMeasurement[]
+  documents         GeneratedDocument[]
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+}
+
+model ReportMeasurement {
+  id        String   @id @default(cuid())
+  reportId  String
+  report    Report   @relation(fields: [reportId], references: [id])
+  type      String
+  label     String
+  value     Float
+  unit      String
+  createdAt DateTime @default(now())
+}
+
+model PatientPortalAccess {
+  id            String   @id @default(cuid())
+  patientId     String   @unique
+  patient       Patient  @relation(fields: [patientId], references: [id])
+  userId        String   @unique
+  user          User     @relation(fields: [userId], references: [id])
+  lastLoginAt   DateTime?
+  createdAt     DateTime @default(now())
+}
+
+model GeneratedDocument {
+  id             String   @id @default(cuid())
+  reportId       String
+  report         Report   @relation(fields: [reportId], references: [id])
+  type           String
+  filePath       String
+  generatedById  String
+  generatedAt    DateTime @default(now())
+}
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  userId      String?
+  user        User?    @relation(fields: [userId], references: [id])
+  action      String
+  entityType  String
+  entityId    String?
+  payload     Json?
+  createdAt   DateTime @default(now())
+}
+
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  title     String
+  message   String
+  type      String
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
