@@ -97,20 +97,22 @@ export function AppLayout({ children, title, actions }: AppLayoutProps) {
 
         {/* User & Logout */}
         <div className="sidebar-footer">
-          {!collapsed && user && (
-            <motion.div
-              className="user-info"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-            >
-              <div className="user-avatar">{user.firstName[0]}{user.lastName[0]}</div>
-              <div className="user-meta">
-                <div className="user-name">{user.firstName} {user.lastName}</div>
-                <div className="user-role">{roleLabel(user.role)}</div>
-              </div>
-            </motion.div>
-          )}
+          <AnimatePresence>
+            {!collapsed && user && (
+              <motion.div
+                className="user-info"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+              >
+                <div className="user-avatar">{user.firstName[0]}{user.lastName[0]}</div>
+                <div className="user-meta">
+                  <div className="user-name">{user.firstName} {user.lastName}</div>
+                  <div className="user-role">{roleLabel(user.role)}</div>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
           <button
             className="logout-btn"
             onClick={handleLogout}

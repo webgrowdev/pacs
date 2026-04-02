@@ -1,8 +1,9 @@
+import { ReactNode } from 'react';
 import { Navigate } from 'react-router-dom';
 import { useAuth, UserRole } from '../lib/auth';
 
 interface Props {
-  children: React.ReactNode;
+  children: ReactNode;
   roles?: UserRole[];
 }
 

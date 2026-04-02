@@ -72,39 +72,51 @@ async function main() {
     create: { patientId: patient.id, userId: portalUser.id }
   });
 
-  const study = await prisma.study.create({
-    data: {
-      patientId: patient.id,
-      modality: 'RM',
-      studyDate: new Date(),
-      status: StudyStatus.IN_REVIEW,
-      description: 'RM de rodilla derecha',
-      uploadedById: admin.id,
-      assignedDoctorId: doctor.id,
-      metadataJson: { institution: 'Centro Médico Demo', bodyPart: 'KNEE' }
-    }
-  });
+  // Idempotente: solo crear estudio demo si el paciente no tiene estudios
+  let study = await prisma.study.findFirst({ where: { patientId: patient.id, modality: 'RM' } });
+  if (!study) {
+    study = await prisma.study.create({
+      data: {
+        patientId: patient.id,
+        modality: 'RM',
+        studyDate: new Date(),
+        status: StudyStatus.IN_REVIEW,
+        description: 'RM de rodilla derecha',
+        uploadedById: admin.id,
+        assignedDoctorId: doctor.id,
+        metadataJson: { institution: 'Centro Médico Demo', bodyPart: 'KNEE' }
+      }
+    });
+  }
 
-  await prisma.report.create({
-    data: {
-      studyId: study.id,
-      doctorId: doctor.id,
-      findings: 'No se observan lesiones meniscales significativas.',
-      conclusion: 'RM de rodilla dentro de parámetros normales.',
-      patientSummary: 'No se encontraron hallazgos relevantes en su resonancia.',
-      status: ReportStatus.DRAFT,
-      draftedAt: new Date()
-    }
-  });
+  // Idempotente: solo crear informe demo si el estudio no tiene informes
+  const existingReport = await prisma.report.findFirst({ where: { studyId: study.id, doctorId: doctor.id } });
+  if (!existingReport) {
+    await prisma.report.create({
+      data: {
+        studyId: study.id,
+        doctorId: doctor.id,
+        findings: 'No se observan lesiones meniscales significativas.',
+        conclusion: 'RM de rodilla dentro de parámetros normales.',
+        patientSummary: 'No se encontraron hallazgos relevantes en su resonancia.',
+        status: ReportStatus.DRAFT,
+        draftedAt: new Date()
+      }
+    });
+  }
 
-  await prisma.notification.create({
-    data: {
-      userId: doctor.id,
-      title: 'Worklist inicial',
-      message: 'Tiene 1 estudio demo asignado para revisar.',
-      type: 'SYSTEM'
-    }
-  });
+  // Idempotente: solo crear notificación si no existe una igual
+  const existingNotif = await prisma.notification.findFirst({ where: { userId: doctor.id, type: 'SYSTEM', title: 'Worklist inicial' } });
+  if (!existingNotif) {
+    await prisma.notification.create({
+      data: {
+        userId: doctor.id,
+        title: 'Worklist inicial',
+        message: 'Tiene 1 estudio demo asignado para revisar.',
+        type: 'SYSTEM'
+      }
+    });
+  }
 
   await prisma.auditLog.create({
     data: {

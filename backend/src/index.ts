@@ -43,17 +43,22 @@ app.use(express.json({ limit: '10mb' }));
 app.get('/health', (_req, res) => res.json({ status: 'ok', service: 'pacs-backend', env: env.NODE_ENV }));
 
 // Archivos estáticos — protegidos por autenticación
+// fallthrough: true (default) para que archivos no encontrados devuelvan 404 limpio via next()
 app.use(
   '/files',
   requireAuth as any,
   express.static(path.resolve(process.cwd(), env.STORAGE_ROOT), {
-    fallthrough: false,
     setHeaders: (res) => {
       res.setHeader('X-Content-Type-Options', 'nosniff');
       res.setHeader('Cache-Control', 'private, max-age=3600');
     }
   })
 );
+
+// Manejar 404 de archivos estáticos explícitamente (después del static middleware)
+app.use('/files', (_req, res) => {
+  res.status(404).json({ message: 'Archivo no encontrado' });
+});
 
 // API routes
 app.use('/api/auth', authRouter);

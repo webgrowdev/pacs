@@ -19,11 +19,14 @@ const createUserSchema = z.object({
 // Listar usuarios
 usersRouter.get('/', async (_req: AuthRequest, res: any) => {
   try {
+    // Prisma no permite include + select al mismo nivel - usar solo include
     const users = await prisma.user.findMany({
       include: { role: true },
-      select: { id: true, email: true, firstName: true, lastName: true, isActive: true, role: true, createdAt: true }
-    } as any);
-    return res.json(users);
+      orderBy: { createdAt: 'desc' }
+    });
+    // Omitir passwordHash antes de enviar
+    const safeUsers = users.map(({ passwordHash: _, ...u }) => u);
+    return res.json(safeUsers);
   } catch (err) {
     console.error('[USERS/GET]', err);
     return res.status(500).json({ message: 'Error al obtener usuarios' });

@@ -17,8 +17,10 @@ export function LoginPage() {
     setLoading(true);
     try {
       await login(email, password);
-      // El router redirigirá automáticamente según el rol (ver AppRouter)
-      navigate('/dashboard');
+      // Redirigir directamente según el rol para evitar flash de redirección
+      const stored = localStorage.getItem('user');
+      const role = stored ? JSON.parse(stored).role : null;
+      navigate(role === 'PATIENT' ? '/portal' : '/dashboard', { replace: true });
     } catch (err: any) {
       const msg = err?.response?.data?.message || 'Error al ingresar. Verifique sus credenciales.';
       setError(msg);
