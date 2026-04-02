@@ -6,96 +6,226 @@ import { requireAuth, requireRole, AuthRequest } from '../../middleware/auth.js'
 import { generateClinicalPdf } from './pdf-service.js';
 import { logAudit } from '../../middleware/audit.js';
 import { createNotification } from '../notifications/service.js';
+import { toFileUrl } from '../../storage/file-storage.js';
+import { env } from '../../config/env.js';
 
 export const reportsRouter = Router();
-reportsRouter.use(requireAuth);
+reportsRouter.use(requireAuth as any);
 
-reportsRouter.get('/', requireRole('ADMIN', 'DOCTOR'), async (_req, res) => {
-  const reports = await prisma.report.findMany({ include: { study: { include: { patient: true } }, doctor: true, measurements: true } });
-  res.json(reports);
+// Listar informes (admin ve todos, médico ve los suyos)
+reportsRouter.get('/', requireRole('ADMIN', 'DOCTOR') as any, async (req: AuthRequest, res: any) => {
+  try {
+    const where = req.user?.role === 'DOCTOR' ? { doctorId: req.user.sub } : {};
+    const reports = await prisma.report.findMany({
+      where,
+      include: {
+        study: {
+          include: {
+            patient: { select: { id: true, firstName: true, lastName: true, internalCode: true } }
+          }
+        },
+        doctor: { select: { id: true, firstName: true, lastName: true } },
+        measurements: true
+      },
+      orderBy: { updatedAt: 'desc' }
+    });
+    return res.json(reports);
+  } catch (err) {
+    console.error('[REPORTS/GET]', err);
+    return res.status(500).json({ message: 'Error al obtener informes' });
+  }
+});
+
+// Detalle de un informe
+reportsRouter.get('/:id', requireRole('ADMIN', 'DOCTOR') as any, async (req: AuthRequest, res: any) => {
+  try {
+    const report = await prisma.report.findUnique({
+      where: { id: req.params.id },
+      include: {
+        study: { include: { patient: true } },
+        doctor: { select: { id: true, firstName: true, lastName: true } },
+        measurements: true,
+        documents: true
+      }
+    });
+    if (!report) return res.status(404).json({ message: 'Informe no encontrado' });
+    if (req.user?.role === 'DOCTOR' && report.doctorId !== req.user.sub) {
+      return res.status(403).json({ message: 'No autorizado para ver este informe' });
+    }
+    return res.json(report);
+  } catch (err) {
+    console.error('[REPORTS/GET/:id]', err);
+    return res.status(500).json({ message: 'Error al obtener informe' });
+  }
 });
 
 const draftSchema = z.object({
   studyId: z.string().min(5),
-  findings: z.string().min(5),
-  conclusion: z.string().min(5),
-  patientSummary: z.string().optional(),
-  measurements: z.array(z.object({ type: z.string(), label: z.string(), value: z.number(), unit: z.string() })).optional()
+  findings: z.string().min(5).max(10000),
+  conclusion: z.string().min(5).max(5000),
+  patientSummary: z.string().max(2000).optional(),
+  measurements: z
+    .array(z.object({ type: z.string(), label: z.string().min(1), value: z.number(), unit: z.string().min(1) }))
+    .optional()
 });
 
-reportsRouter.post('/', requireRole('DOCTOR', 'ADMIN'), async (req: AuthRequest, res) => {
+// Crear borrador de informe
+reportsRouter.post('/', requireRole('DOCTOR', 'ADMIN') as any, async (req: AuthRequest, res: any) => {
   const parsed = draftSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ message: 'Payload inválido', errors: parsed.error.flatten() });
 
-  const report = await prisma.report.create({
-    data: {
-      studyId: parsed.data.studyId,
-      doctorId: req.user!.sub,
-      findings: parsed.data.findings,
-      conclusion: parsed.data.conclusion,
-      patientSummary: parsed.data.patientSummary,
-      status: ReportStatus.DRAFT,
-      draftedAt: new Date(),
-      measurements: parsed.data.measurements?.length ? { create: parsed.data.measurements } : undefined
-    },
-    include: { measurements: true }
-  });
-  await logAudit(req, 'REPORT_CREATED', 'REPORT', report.id);
-  res.status(201).json(report);
+  try {
+    // Verificar que el estudio existe y el médico tiene acceso
+    const study = await prisma.study.findUnique({ where: { id: parsed.data.studyId } });
+    if (!study) return res.status(404).json({ message: 'Estudio no encontrado' });
+    if (req.user?.role === 'DOCTOR' && study.assignedDoctorId && study.assignedDoctorId !== req.user.sub) {
+      return res.status(403).json({ message: 'No autorizado para informar este estudio' });
+    }
+
+    // Solo un informe por estudio (un médico por estudio)
+    const existing = await prisma.report.findFirst({ where: { studyId: parsed.data.studyId, doctorId: req.user!.sub } });
+    if (existing) return res.status(409).json({ message: 'Ya existe un informe para este estudio', reportId: existing.id });
+
+    const report = await prisma.report.create({
+      data: {
+        studyId: parsed.data.studyId,
+        doctorId: req.user!.sub,
+        findings: parsed.data.findings,
+        conclusion: parsed.data.conclusion,
+        patientSummary: parsed.data.patientSummary || null,
+        status: ReportStatus.DRAFT,
+        draftedAt: new Date(),
+        measurements: parsed.data.measurements?.length
+          ? { create: parsed.data.measurements }
+          : undefined
+      },
+      include: { measurements: true }
+    });
+
+    await logAudit(req, 'REPORT_CREATED', 'REPORT', report.id);
+    return res.status(201).json(report);
+  } catch (err) {
+    console.error('[REPORTS/POST]', err);
+    return res.status(500).json({ message: 'Error al crear informe' });
+  }
 });
 
-reportsRouter.put('/:id', requireRole('DOCTOR', 'ADMIN'), async (req: AuthRequest, res) => {
-  const parsed = draftSchema.partial().safeParse(req.body);
+// Actualizar borrador
+reportsRouter.put('/:id', requireRole('DOCTOR', 'ADMIN') as any, async (req: AuthRequest, res: any) => {
+  const parsed = draftSchema.partial().omit({ studyId: true }).safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ message: 'Payload inválido', errors: parsed.error.flatten() });
 
-  const report = await prisma.report.update({
-    where: { id: req.params.id },
-    data: {
-      findings: parsed.data.findings,
-      conclusion: parsed.data.conclusion,
-      patientSummary: parsed.data.patientSummary,
-      updatedAt: new Date()
-    }
-  });
+  try {
+    const report = await prisma.report.findUnique({ where: { id: req.params.id } });
+    if (!report) return res.status(404).json({ message: 'Informe no encontrado' });
 
-  if (parsed.data.measurements) {
-    await prisma.reportMeasurement.deleteMany({ where: { reportId: report.id } });
-    if (parsed.data.measurements.length) {
-      await prisma.reportMeasurement.createMany({ data: parsed.data.measurements.map((m) => ({ ...m, reportId: report.id })) });
+    // Solo el médico dueño o admin pueden editar
+    if (req.user?.role === 'DOCTOR' && report.doctorId !== req.user.sub) {
+      return res.status(403).json({ message: 'No autorizado para editar este informe' });
     }
+
+    // No se puede editar un informe ya finalizado
+    if (report.status === ReportStatus.FINAL || report.status === ReportStatus.SIGNED) {
+      return res.status(422).json({ message: 'El informe ya fue finalizado y no puede ser editado' });
+    }
+
+    const updated = await prisma.report.update({
+      where: { id: req.params.id },
+      data: {
+        findings: parsed.data.findings,
+        conclusion: parsed.data.conclusion,
+        patientSummary: parsed.data.patientSummary
+      },
+      include: { measurements: true }
+    });
+
+    // Actualizar mediciones si se envían
+    if (parsed.data.measurements !== undefined) {
+      await prisma.reportMeasurement.deleteMany({ where: { reportId: updated.id } });
+      if (parsed.data.measurements.length) {
+        await prisma.reportMeasurement.createMany({
+          data: parsed.data.measurements.map((m) => ({ ...m, reportId: updated.id }))
+        });
+      }
+    }
+
+    await logAudit(req, 'REPORT_UPDATED', 'REPORT', updated.id);
+    return res.json(updated);
+  } catch (err) {
+    console.error('[REPORTS/PUT]', err);
+    return res.status(500).json({ message: 'Error al actualizar informe' });
   }
-
-  await logAudit(req, 'REPORT_UPDATED', 'REPORT', report.id);
-  res.json(report);
 });
 
-reportsRouter.post('/:id/finalize', requireRole('DOCTOR', 'ADMIN'), async (req: AuthRequest, res) => {
-  const report = await prisma.report.findUnique({ where: { id: req.params.id }, include: { study: { include: { patient: true } }, doctor: true, measurements: true } });
-  if (!report) return res.status(404).json({ message: 'Informe no encontrado' });
+// Finalizar informe y generar PDF
+reportsRouter.post('/:id/finalize', requireRole('DOCTOR', 'ADMIN') as any, async (req: AuthRequest, res: any) => {
+  try {
+    const report = await prisma.report.findUnique({
+      where: { id: req.params.id },
+      include: {
+        study: { include: { patient: true } },
+        doctor: true,
+        measurements: true
+      }
+    });
+    if (!report) return res.status(404).json({ message: 'Informe no encontrado' });
 
-  const pdfPath = await generateClinicalPdf({
-    reportId: report.id,
-    patientName: `${report.study.patient.firstName} ${report.study.patient.lastName}`,
-    patientCode: report.study.patient.internalCode,
-    studyDescription: report.study.description || report.study.modality,
-    doctorName: `${report.doctor.firstName} ${report.doctor.lastName}`,
-    findings: report.findings,
-    conclusion: report.conclusion,
-    measurements: report.measurements.map((m) => ({ label: m.label, value: m.value, unit: m.unit }))
-  });
+    // Solo el dueño o admin
+    if (req.user?.role === 'DOCTOR' && report.doctorId !== req.user.sub) {
+      return res.status(403).json({ message: 'No autorizado para finalizar este informe' });
+    }
 
-  const updated = await prisma.report.update({
-    where: { id: report.id },
-    data: { status: ReportStatus.FINAL, finalizedAt: new Date(), pdfPath }
-  });
-  await prisma.generatedDocument.create({ data: { reportId: report.id, type: 'REPORT_PDF', filePath: pdfPath, generatedById: req.user!.sub } });
-  await prisma.study.update({ where: { id: report.studyId }, data: { status: StudyStatus.REPORTED } });
+    // Ya finalizado
+    if (report.status === ReportStatus.FINAL || report.status === ReportStatus.SIGNED) {
+      return res.status(422).json({ message: 'El informe ya fue finalizado' });
+    }
 
-  const patientAccess = await prisma.patientPortalAccess.findUnique({ where: { patientId: report.study.patientId } });
-  if (patientAccess) {
-    await createNotification(patientAccess.userId, 'Nuevo informe disponible', 'Su informe médico fue publicado en el portal.', 'REPORT_PUBLISHED');
+    const { patient } = report.study;
+
+    const pdfRelativePath = await generateClinicalPdf({
+      reportId: report.id,
+      patientName: `${patient.firstName} ${patient.lastName}`,
+      patientCode: patient.internalCode,
+      patientDob: patient.dateOfBirth?.toISOString(),
+      patientSex: patient.sex,
+      studyDate: report.study.studyDate?.toISOString(),
+      studyModality: report.study.modality,
+      studyDescription: report.study.description || report.study.modality,
+      doctorName: `${report.doctor.firstName} ${report.doctor.lastName}`,
+      findings: report.findings,
+      conclusion: report.conclusion,
+      patientSummary: report.patientSummary || undefined,
+      measurements: report.measurements.map((m) => ({ label: m.label, value: m.value, unit: m.unit }))
+    });
+
+    const updated = await prisma.report.update({
+      where: { id: report.id },
+      data: { status: ReportStatus.FINAL, finalizedAt: new Date(), pdfPath: pdfRelativePath }
+    });
+
+    await prisma.generatedDocument.create({
+      data: { reportId: report.id, type: 'REPORT_PDF', filePath: pdfRelativePath, generatedById: req.user!.sub }
+    });
+
+    await prisma.study.update({
+      where: { id: report.studyId },
+      data: { status: StudyStatus.REPORTED }
+    });
+
+    // Notificar al paciente si tiene portal
+    const patientAccess = await prisma.patientPortalAccess.findUnique({ where: { patientId: patient.id } });
+    if (patientAccess) {
+      await createNotification(patientAccess.userId, 'Nuevo informe disponible', 'Su informe médico fue publicado en el portal.', 'REPORT_PUBLISHED').catch(() => {});
+    }
+
+    await logAudit(req, 'REPORT_FINALIZED', 'REPORT', report.id, { pdfPath: pdfRelativePath });
+
+    return res.json({
+      ...updated,
+      pdfUrl: toFileUrl(pdfRelativePath, env.APP_BASE_URL)
+    });
+  } catch (err) {
+    console.error('[REPORTS/FINALIZE]', err);
+    return res.status(500).json({ message: 'Error al finalizar informe' });
   }
-
-  await logAudit(req, 'REPORT_FINALIZED', 'REPORT', report.id);
-  res.json(updated);
 });

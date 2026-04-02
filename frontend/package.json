@@ -1,6 +1,6 @@
 {
   "name": "pacs-frontend",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@cornerstonejs/core": "^3.18.2",
+    "@cornerstonejs/dicom-image-loader": "^3.18.2",
     "@cornerstonejs/tools": "^3.18.2",
     "axios": "^1.8.3",
     "framer-motion": "^12.6.3",

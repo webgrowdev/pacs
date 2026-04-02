@@ -12,72 +12,139 @@ import { studyStoragePath } from '../../storage/file-storage.js';
 import { logAudit } from '../../middleware/audit.js';
 import { createNotification } from '../notifications/service.js';
 
-const upload = multer({ dest: path.resolve(process.cwd(), 'storage/tmp') });
+const upload = multer({
+  dest: path.resolve(process.cwd(), 'storage/tmp'),
+  limits: { fileSize: 500 * 1024 * 1024 } // 500MB per file
+});
+
 export const studiesRouter = Router();
-studiesRouter.use(requireAuth);
+studiesRouter.use(requireAuth as any);
 
+// Worklist para médicos y admins con filtros
+studiesRouter.get('/worklist', requireRole('ADMIN', 'DOCTOR') as any, async (req: AuthRequest, res: any) => {
+  try {
+    const status = req.query.status ? String(req.query.status) : undefined;
+    const modality = req.query.modality ? String(req.query.modality) : undefined;
+    const dateFrom = req.query.dateFrom ? new Date(String(req.query.dateFrom)) : undefined;
+    const dateTo = req.query.dateTo ? new Date(String(req.query.dateTo)) : undefined;
 
-studiesRouter.get('/worklist', requireRole('ADMIN', 'DOCTOR'), async (req: AuthRequest, res) => {
-  const status = req.query.status ? String(req.query.status) : undefined;
-  const dateFrom = req.query.dateFrom ? new Date(String(req.query.dateFrom)) : undefined;
-  const dateTo = req.query.dateTo ? new Date(String(req.query.dateTo)) : undefined;
+    const where: any = {};
+    if (status) where.status = status;
+    if (modality) where.modality = modality;
+    if (dateFrom || dateTo) where.studyDate = { gte: dateFrom, lte: dateTo };
 
-  const where: any = {
-    status: status as any,
-    studyDate: dateFrom || dateTo ? { gte: dateFrom, lte: dateTo } : undefined
-  };
+    if (req.user?.role === 'DOCTOR') {
+      where.OR = [{ assignedDoctorId: req.user.sub }, { assignedDoctorId: null }];
+    }
 
-  if (req.user?.role === 'DOCTOR') {
-    where.OR = [{ assignedDoctorId: req.user.sub }, { assignedDoctorId: null }];
+    const studies = await prisma.study.findMany({
+      where,
+      include: {
+        patient: { select: { id: true, firstName: true, lastName: true, internalCode: true, documentId: true } },
+        assignedDoctor: { select: { id: true, firstName: true, lastName: true } },
+        reports: { select: { id: true, status: true } }
+      },
+      orderBy: { studyDate: 'desc' }
+    });
+
+    return res.json(studies);
+  } catch (err) {
+    console.error('[STUDIES/WORKLIST]', err);
+    return res.status(500).json({ message: 'Error al cargar worklist' });
   }
-
-  const studies = await prisma.study.findMany({
-    where,
-    include: { patient: true, assignedDoctor: true, reports: true },
-    orderBy: { studyDate: 'desc' }
-  });
-
-  res.json(studies);
 });
 
-studiesRouter.post('/:id/assign', requireRole('ADMIN'), async (req: AuthRequest, res) => {
-  const doctorId = String(req.body.doctorId || '');
-  const doctor = await prisma.user.findUnique({ where: { id: doctorId }, include: { role: true } });
-  if (!doctor || doctor.role.name !== 'DOCTOR') return res.status(400).json({ message: 'Doctor inválido' });
+// Asignar médico a estudio
+studiesRouter.post('/:id/assign', requireRole('ADMIN') as any, async (req: AuthRequest, res: any) => {
+  try {
+    const doctorId = String(req.body.doctorId || '');
+    const doctor = await prisma.user.findUnique({ where: { id: doctorId }, include: { role: true } });
+    if (!doctor || doctor.role.name !== 'DOCTOR') return res.status(400).json({ message: 'Doctor inválido' });
 
-  const study = await prisma.study.update({ where: { id: req.params.id }, data: { assignedDoctorId: doctorId, status: StudyStatus.IN_REVIEW } });
-  await createNotification(doctorId, 'Nuevo estudio asignado', `Tiene un nuevo estudio (${study.id}) para informar.`, 'STUDY_ASSIGNED');
-  await logAudit(req, 'STUDY_ASSIGNED', 'STUDY', study.id, { doctorId });
-  res.json(study);
-});
-
-studiesRouter.get('/', requireRole('ADMIN', 'DOCTOR'), async (req: AuthRequest, res) => {
-  const where = req.user?.role === 'DOCTOR'
-    ? { OR: [{ assignedDoctorId: req.user.sub }, { assignedDoctorId: null }] }
-    : undefined;
-
-  const studies = await prisma.study.findMany({ where, include: { patient: true, reports: true } });
-  res.json(studies);
-});
-
-studiesRouter.get('/:id', requireRole('ADMIN', 'DOCTOR'), async (req: AuthRequest, res) => {
-  const study = await prisma.study.findUnique({ where: { id: req.params.id }, include: { patient: true, dicomFiles: true, reports: true } });
-  if (!study) return res.status(404).json({ message: 'Estudio no encontrado' });
-  if (req.user?.role === 'DOCTOR' && study.assignedDoctorId && study.assignedDoctorId !== req.user.sub) {
-    return res.status(403).json({ message: 'No autorizado para este estudio' });
+    const study = await prisma.study.update({
+      where: { id: req.params.id },
+      data: { assignedDoctorId: doctorId, status: StudyStatus.IN_REVIEW }
+    });
+    await createNotification(doctorId, 'Nuevo estudio asignado', `Tiene un nuevo estudio (${study.id.slice(0, 8)}) para informar.`, 'STUDY_ASSIGNED');
+    await logAudit(req, 'STUDY_ASSIGNED', 'STUDY', study.id, { doctorId });
+    return res.json(study);
+  } catch (err: any) {
+    if (err?.code === 'P2025') return res.status(404).json({ message: 'Estudio no encontrado' });
+    console.error('[STUDIES/ASSIGN]', err);
+    return res.status(500).json({ message: 'Error al asignar médico' });
   }
-  res.json(study);
 });
 
+// Listar estudios
+studiesRouter.get('/', requireRole('ADMIN', 'DOCTOR') as any, async (req: AuthRequest, res: any) => {
+  try {
+    const patientId = req.query.patientId ? String(req.query.patientId) : undefined;
+    const where: any = {};
+    if (patientId) where.patientId = patientId;
+    if (req.user?.role === 'DOCTOR') {
+      where.OR = [{ assignedDoctorId: req.user.sub }, { assignedDoctorId: null }];
+    }
+
+    const studies = await prisma.study.findMany({
+      where,
+      include: {
+        patient: { select: { id: true, firstName: true, lastName: true, internalCode: true } },
+        reports: { select: { id: true, status: true } }
+      },
+      orderBy: { studyDate: 'desc' }
+    });
+    return res.json(studies);
+  } catch (err) {
+    console.error('[STUDIES/GET]', err);
+    return res.status(500).json({ message: 'Error al obtener estudios' });
+  }
+});
+
+// Detalle de un estudio
+studiesRouter.get('/:id', requireRole('ADMIN', 'DOCTOR') as any, async (req: AuthRequest, res: any) => {
+  try {
+    const study = await prisma.study.findUnique({
+      where: { id: req.params.id },
+      include: {
+        patient: true,
+        dicomFiles: { orderBy: { instanceNumber: 'asc' } },
+        series: true,
+        reports: {
+          include: {
+            doctor: { select: { id: true, firstName: true, lastName: true } },
+            measurements: true
+          }
+        },
+        assignedDoctor: { select: { id: true, firstName: true, lastName: true } },
+        uploadedBy: { select: { id: true, firstName: true, lastName: true } }
+      }
+    });
+    if (!study) return res.status(404).json({ message: 'Estudio no encontrado' });
+
+    // Médico solo ve estudios asignados a él o sin asignar
+    if (req.user?.role === 'DOCTOR' && study.assignedDoctorId && study.assignedDoctorId !== req.user.sub) {
+      return res.status(403).json({ message: 'No autorizado para este estudio' });
+    }
+
+    await logAudit(req, 'STUDY_VIEWED', 'STUDY', study.id);
+    return res.json(study);
+  } catch (err) {
+    console.error('[STUDIES/GET/:id]', err);
+    return res.status(500).json({ message: 'Error al obtener estudio' });
+  }
+});
+
+// Schema de carga de estudio
 const uploadSchema = z.object({
   patientId: z.string().min(5),
-  modality: z.string().min(1),
-  studyDate: z.string().datetime(),
-  description: z.string().optional(),
+  modality: z.string().min(1).max(10),
+  studyDate: z.string().refine((v) => !isNaN(Date.parse(v)), { message: 'Fecha inválida' }),
+  description: z.string().max(500).optional(),
   assignedDoctorId: z.string().optional()
 });
 
-studiesRouter.post('/upload', requireRole('ADMIN', 'DOCTOR'), upload.array('files', 400), async (req: AuthRequest, res) => {
+// Carga de estudio DICOM
+studiesRouter.post('/upload', requireRole('ADMIN', 'DOCTOR') as any, upload.array('files', 400), async (req: AuthRequest, res: any) => {
   const parsedBody = uploadSchema.safeParse(req.body);
   if (!parsedBody.success) return res.status(400).json({ message: 'Payload inválido', errors: parsedBody.error.flatten() });
 
@@ -85,61 +152,102 @@ studiesRouter.post('/upload', requireRole('ADMIN', 'DOCTOR'), upload.array('file
   if (!files.length) return res.status(400).json({ message: 'Debe subir al menos un archivo DICOM o ZIP' });
 
   const { patientId, modality, studyDate, description, assignedDoctorId } = parsedBody.data;
-  const study = await prisma.study.create({
-    data: {
-      patientId,
-      modality,
-      studyDate: new Date(studyDate),
-      description,
-      assignedDoctorId: assignedDoctorId || null,
-      uploadedById: req.user!.sub
+
+  // Verificar que el paciente existe
+  try {
+    const patient = await prisma.patient.findUnique({ where: { id: patientId } });
+    if (!patient) {
+      cleanupTmpFiles(files);
+      return res.status(400).json({ message: 'Paciente no encontrado' });
     }
-  });
+  } catch (err) {
+    cleanupTmpFiles(files);
+    return res.status(500).json({ message: 'Error al verificar paciente' });
+  }
+
+  let study: any;
+  try {
+    study = await prisma.study.create({
+      data: {
+        patientId,
+        modality,
+        studyDate: new Date(studyDate),
+        description: description || null,
+        assignedDoctorId: assignedDoctorId || null,
+        uploadedById: req.user!.sub
+      }
+    });
+  } catch (err) {
+    cleanupTmpFiles(files);
+    console.error('[STUDIES/UPLOAD create]', err);
+    return res.status(500).json({ message: 'Error al crear estudio' });
+  }
 
   const storageFolder = studyStoragePath(study.id);
   let persistedFiles = 0;
+  const errors: string[] = [];
 
   for (const file of files) {
-    if (file.originalname.endsWith('.zip')) {
-      const zip = new AdmZip(file.path);
-      for (const entry of zip.getEntries()) {
-        if (entry.isDirectory) continue;
-        const entryData = entry.getData();
-        const parsed = safeParseDicom(entryData);
-        const out = path.join(storageFolder, entry.entryName.replace(/\//g, '_'));
-        fs.writeFileSync(out, entryData);
-        await persistDicom(study.id, out, entry.entryName, entryData.length, parsed);
+    try {
+      if (file.originalname.toLowerCase().endsWith('.zip')) {
+        const zip = new AdmZip(file.path);
+        for (const entry of zip.getEntries()) {
+          if (entry.isDirectory) continue;
+          const name = entry.entryName.replace(/\//g, '_');
+          const entryData = entry.getData();
+          const parsed = safeParseDicom(entryData);
+          const out = path.join(storageFolder, name);
+          fs.writeFileSync(out, entryData);
+          await persistDicom(study.id, out, name, entryData.length, parsed);
+          persistedFiles += 1;
+        }
+      } else {
+        const data = fs.readFileSync(file.path);
+        const parsed = safeParseDicom(data);
+        const out = path.join(storageFolder, file.originalname);
+        fs.copyFileSync(file.path, out);
+        await persistDicom(study.id, out, file.originalname, file.size, parsed);
         persistedFiles += 1;
       }
-    } else {
-      const data = fs.readFileSync(file.path);
-      const parsed = safeParseDicom(data);
-      const out = path.join(storageFolder, file.originalname);
-      fs.copyFileSync(file.path, out);
-      await persistDicom(study.id, out, file.originalname, file.size, parsed);
-      persistedFiles += 1;
+    } catch (e) {
+      errors.push(file.originalname);
+      console.error('[STUDIES/UPLOAD file]', file.originalname, e);
+    } finally {
+      if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
     }
-    fs.unlinkSync(file.path);
   }
 
   if (study.assignedDoctorId) {
-    await createNotification(study.assignedDoctorId, 'Estudio cargado', `Se cargó un estudio ${modality} asignado a usted.`, 'STUDY_UPLOADED');
+    await createNotification(study.assignedDoctorId, 'Estudio cargado', `Se cargó un estudio ${modality} asignado a usted.`, 'STUDY_UPLOADED').catch(() => {});
   }
-  await logAudit(req, 'STUDY_UPLOADED', 'STUDY', study.id, { persistedFiles, modality });
-  res.status(201).json({ studyId: study.id, files: persistedFiles });
+  await logAudit(req, 'STUDY_UPLOADED', 'STUDY', study.id, { persistedFiles, modality, errors });
+
+  return res.status(201).json({
+    studyId: study.id,
+    files: persistedFiles,
+    errors: errors.length ? errors : undefined
+  });
 });
 
-async function persistDicom(studyId: string, filePath: string, fileName: string, fileSize: number, parsed: ReturnType<typeof safeParseDicom>) {
+function cleanupTmpFiles(files: Express.Multer.File[]) {
+  for (const f of files) {
+    try { if (fs.existsSync(f.path)) fs.unlinkSync(f.path); } catch {}
+  }
+}
+
+async function persistDicom(
+  studyId: string,
+  filePath: string,
+  fileName: string,
+  fileSize: number,
+  parsed: ReturnType<typeof safeParseDicom>
+) {
   let seriesId: string | null = null;
   if (parsed.seriesInstanceUid) {
     let series = await prisma.studySeries.findFirst({ where: { studyId, seriesInstanceUid: parsed.seriesInstanceUid } });
     if (!series) {
       series = await prisma.studySeries.create({
-        data: {
-          studyId,
-          seriesInstanceUid: parsed.seriesInstanceUid,
-          modality: parsed.modality || undefined
-        }
+        data: { studyId, seriesInstanceUid: parsed.seriesInstanceUid, modality: parsed.modality || undefined }
       });
     }
     seriesId = series.id;
@@ -155,7 +263,7 @@ async function persistDicom(studyId: string, filePath: string, fileName: string,
       fileSize,
       sopInstanceUid: parsed.sopInstanceUid,
       instanceNumber: parsed.instanceNumber || null,
-      metadataJson: parsed
+      metadataJson: parsed as any
     }
   });
 }
@@ -168,9 +276,19 @@ function safeParseDicom(buffer: Buffer) {
       seriesInstanceUid: dataSet.string('x0020000e') || null,
       sopInstanceUid: dataSet.string('x00080018') || null,
       instanceNumber: Number(dataSet.string('x00200013') || 0),
-      modality: dataSet.string('x00080060') || null
+      modality: dataSet.string('x00080060') || null,
+      patientName: dataSet.string('x00100010') || null,
+      studyDescription: dataSet.string('x00081030') || null
     };
   } catch {
-    return { studyInstanceUid: null, seriesInstanceUid: null, sopInstanceUid: null, instanceNumber: null, modality: null };
+    return {
+      studyInstanceUid: null,
+      seriesInstanceUid: null,
+      sopInstanceUid: null,
+      instanceNumber: null,
+      modality: null,
+      patientName: null,
+      studyDescription: null
+    };
   }
 }
