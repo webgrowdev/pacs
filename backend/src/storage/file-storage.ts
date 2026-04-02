@@ -6,14 +6,31 @@ export function ensureDir(dir: string) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
-export function studyStoragePath(studyId: string) {
+export function studyStoragePath(studyId: string): string {
   const folder = path.resolve(process.cwd(), env.STORAGE_ROOT, 'dicom', studyId);
   ensureDir(folder);
   return folder;
 }
 
-export function pdfStoragePath() {
+export function pdfStoragePath(): string {
   const folder = path.resolve(process.cwd(), env.STORAGE_ROOT, 'pdfs');
   ensureDir(folder);
   return folder;
+}
+
+/**
+ * Convierte una ruta absoluta de almacenamiento a ruta relativa al STORAGE_ROOT.
+ * Ej: /abs/storage/pdfs/xyz.pdf → pdfs/xyz.pdf
+ */
+export function toRelativePath(absolutePath: string): string {
+  const root = path.resolve(process.cwd(), env.STORAGE_ROOT);
+  return path.relative(root, absolutePath);
+}
+
+/**
+ * URL pública para servir el archivo (requiere auth en /files)
+ */
+export function toFileUrl(relativePath: string, baseUrl: string): string {
+  const normalized = relativePath.replace(/\\/g, '/');
+  return `${baseUrl}/files/${normalized}`;
 }
