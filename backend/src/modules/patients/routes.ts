@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../../config/prisma.js';
+import { insensitive } from '../../config/db.js';
 import { requireAuth, requireRole, AuthRequest } from '../../middleware/auth.js';
 import { logAudit } from '../../middleware/audit.js';
 
@@ -26,10 +27,10 @@ patientsRouter.get('/', requireRole('ADMIN', 'DOCTOR') as any, async (req: AuthR
       where: search
         ? {
             OR: [
-              { firstName: { contains: search, mode: 'insensitive' } },
-              { lastName: { contains: search, mode: 'insensitive' } },
-              { internalCode: { contains: search, mode: 'insensitive' } },
-              { documentId: { contains: search, mode: 'insensitive' } }
+              { firstName: { contains: search, ...insensitive() } },
+              { lastName: { contains: search, ...insensitive() } },
+              { internalCode: { contains: search, ...insensitive() } },
+              { documentId: { contains: search, ...insensitive() } }
             ]
           }
         : undefined,

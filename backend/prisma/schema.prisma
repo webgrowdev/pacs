@@ -2,8 +2,16 @@ generator client {
   provider = "prisma-client-js"
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Para cambiar de motor de base de datos:
+//   1. Ajusta DATABASE_PROVIDER en .env (mysql o postgresql)
+//   2. Ejecuta: npm run db:switch
+//   3. Luego: npx prisma migrate dev  (o prisma db push)
+//
+// El script db:switch actualiza automáticamente el provider de este bloque.
+// ─────────────────────────────────────────────────────────────────────────────
 datasource db {
-  provider = "postgresql"
+  provider = "mysql"
   url      = env("DATABASE_URL")
 }
 
@@ -74,7 +82,7 @@ model Study {
   modality        String
   studyDate       DateTime
   status          StudyStatus     @default(UPLOADED)
-  description     String?
+  description     String?         @db.Text
   metadataJson    Json?
   uploadedById    String
   uploadedBy      User            @relation("UploaderStudies", fields: [uploadedById], references: [id])
@@ -93,7 +101,7 @@ model StudySeries {
   study             Study       @relation(fields: [studyId], references: [id])
   seriesInstanceUid String
   seriesNumber      Int?
-  description       String?
+  description       String?     @db.Text
   modality          String?
   dicomFiles        DicomFile[]
   createdAt         DateTime    @default(now())
@@ -105,7 +113,7 @@ model DicomFile {
   study           Study       @relation(fields: [studyId], references: [id])
   seriesId        String?
   series          StudySeries? @relation(fields: [seriesId], references: [id])
-  filePath        String
+  filePath        String      @db.Text
   fileName        String
   mimeType        String
   fileSize        Int
@@ -121,13 +129,13 @@ model Report {
   study             Study                @relation(fields: [studyId], references: [id])
   doctorId          String
   doctor            User                 @relation("DoctorReports", fields: [doctorId], references: [id])
-  findings          String
-  conclusion        String
-  patientSummary    String?
+  findings          String               @db.Text
+  conclusion        String               @db.Text
+  patientSummary    String?              @db.Text
   status            ReportStatus         @default(DRAFT)
-  draftedAt         DateTime?            
+  draftedAt         DateTime?
   finalizedAt       DateTime?
-  pdfPath           String?
+  pdfPath           String?              @db.Text
   measurements      ReportMeasurement[]
   documents         GeneratedDocument[]
   createdAt         DateTime             @default(now())
@@ -160,7 +168,7 @@ model GeneratedDocument {
   reportId       String
   report         Report   @relation(fields: [reportId], references: [id])
   type           String
-  filePath       String
+  filePath       String   @db.Text
   generatedById  String
   generatedAt    DateTime @default(now())
 }
@@ -176,13 +184,12 @@ model AuditLog {
   createdAt   DateTime @default(now())
 }
 
-
 model Notification {
   id        String   @id @default(cuid())
   userId    String
   user      User     @relation(fields: [userId], references: [id])
   title     String
-  message   String
+  message   String   @db.Text
   type      String
   isRead    Boolean  @default(false)
   createdAt DateTime @default(now())

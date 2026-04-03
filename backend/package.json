@@ -9,7 +9,10 @@
     "start": "node dist/index.js",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
-    "prisma:seed": "tsx prisma/seed.ts"
+    "prisma:seed": "tsx prisma/seed.ts",
+    "db:switch": "tsx scripts/switch-db-provider.ts",
+    "db:setup": "tsx scripts/switch-db-provider.ts && npx prisma db push && npm run prisma:seed",
+    "db:reset": "npx prisma db push --force-reset && npm run prisma:seed"
   },
   "dependencies": {
     "@prisma/client": "^6.5.0",
