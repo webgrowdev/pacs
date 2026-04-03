@@ -14,7 +14,7 @@ authRouter.post(
   [body('email').isEmail().normalizeEmail(), body('password').isLength({ min: 8 })],
   async (req: AuthRequest, res: any) => {
     const errors = validationResult(req);
-    if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+    if (!errors.isEmpty()) return res.status(400).json({ message: 'Email o contraseña con formato inválido', errors: errors.array() });
 
     try {
       const { email, password } = req.body;
@@ -48,7 +48,7 @@ authRouter.post(
   [body('refreshToken').isString().isLength({ min: 20 })],
   async (req: AuthRequest, res: any) => {
     const errors = validationResult(req);
-    if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+    if (!errors.isEmpty()) return res.status(400).json({ message: 'Token de refresco inválido' });
 
     try {
       const payload = jwt.verify(req.body.refreshToken, env.JWT_REFRESH_SECRET) as { sub: string; role: string; email: string };

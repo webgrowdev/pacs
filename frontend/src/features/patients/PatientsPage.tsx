@@ -38,7 +38,9 @@ export function PatientsPage() {
     try {
       const { data } = await api.get('/patients', { params: search ? { search } : {} });
       setPatients(data);
-    } catch {}
+    } catch (err: any) {
+      console.error('[PATIENTS]', err);
+    }
     setLoading(false);
   };
 

@@ -26,6 +26,7 @@ const MODALITY_OPTIONS = ['', 'RX', 'TC', 'RM', 'ECO', 'PET', 'MAMM', 'NM'];
 export function WorklistPage() {
   const [studies, setStudies] = useState<Study[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [modalityFilter, setModalityFilter] = useState('');
   const [dateFrom, setDateFrom] = useState('');
@@ -33,6 +34,7 @@ export function WorklistPage() {
 
   const load = async () => {
     setLoading(true);
+    setError('');
     try {
       const params: any = {};
       if (statusFilter) params.status = statusFilter;
@@ -41,7 +43,10 @@ export function WorklistPage() {
       if (dateTo) params.dateTo = new Date(dateTo + 'T23:59:59').toISOString();
       const { data } = await api.get('/studies/worklist', { params });
       setStudies(data);
-    } catch {}
+    } catch (err: any) {
+      console.error('[WORKLIST]', err);
+      setError(err?.response?.data?.message ?? 'Error al cargar la worklist');
+    }
     setLoading(false);
   };
 
@@ -88,6 +93,12 @@ export function WorklistPage() {
           )}
         </div>
       </div>
+
+      {error && (
+        <div className="alert alert-error" style={{ marginBottom: 12 }}>
+          <span>✕</span><span>{error}</span>
+        </div>
+      )}
 
       {/* Results count */}
       <div className="flex items-center justify-between mb-4">

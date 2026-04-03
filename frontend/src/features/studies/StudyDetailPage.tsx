@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { AppLayout } from '../../components/AppLayout';
-import { api } from '../../lib/api';
+import { api, getFilesBaseUrl } from '../../lib/api';
 import { DicomViewer } from './DicomViewer';
 import { useAuth } from '../../lib/auth';
 
@@ -181,7 +181,8 @@ export function StudyDetailPage() {
 
   const removeMeasurement = (i: number) => setMeasurements((prev) => prev.filter((_, idx) => idx !== i));
 
-  const dicomUrls = study?.dicomFiles.map((f) => `/files/dicom/${study.id}/${f.fileName}`) ?? [];
+  const filesBase = getFilesBaseUrl();
+  const dicomUrls = study?.dicomFiles.map((f) => `${filesBase}/dicom/${study.id}/${f.fileName}`) ?? [];
 
   if (loading) {
     return (
@@ -374,7 +375,7 @@ export function StudyDetailPage() {
               {/* PDF link */}
               {isFinalized && report?.pdfPath && (
                 <a
-                  href={`/files/${report.pdfPath}`}
+                  href={`${getFilesBaseUrl()}/${report.pdfPath}`}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="btn btn-primary"

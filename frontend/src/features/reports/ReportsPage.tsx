@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { AppLayout } from '../../components/AppLayout';
-import { api } from '../../lib/api';
+import { api, getFilesBaseUrl } from '../../lib/api';
 
 interface Report {
   id: string;
@@ -105,7 +105,7 @@ export function ReportsPage() {
                     <td>
                       {r.pdfPath ? (
                         <a
-                          href={`/files/${r.pdfPath}`}
+                          href={`${getFilesBaseUrl()}/${r.pdfPath}`}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="btn btn-ghost btn-sm"

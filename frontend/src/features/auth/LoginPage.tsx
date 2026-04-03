@@ -22,7 +22,10 @@ export function LoginPage() {
       const role = stored ? JSON.parse(stored).role : null;
       navigate(role === 'PATIENT' ? '/portal' : '/dashboard', { replace: true });
     } catch (err: any) {
-      const msg = err?.response?.data?.message || 'Error al ingresar. Verifique sus credenciales.';
+      const data = err?.response?.data;
+      const msg = data?.message
+        || (Array.isArray(data?.errors) ? data.errors.map((e: any) => e.msg || e.message).join('. ') : null)
+        || 'Error al ingresar. Verifique sus credenciales.';
       setError(msg);
     } finally {
       setLoading(false);

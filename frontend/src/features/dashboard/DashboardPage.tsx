@@ -18,6 +18,7 @@ export function DashboardPage() {
   const [stats, setStats] = useState<Stats>({});
   const [recentStudies, setRecentStudies] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
 
   useEffect(() => {
     async function load() {
@@ -35,7 +36,10 @@ export function DashboardPage() {
           reported: studies.filter((s) => s.status === 'REPORTED').length
         });
         setRecentStudies(studies.slice(0, 5));
-      } catch {}
+      } catch (err: any) {
+        console.error('[DASHBOARD]', err);
+        setError(err?.response?.data?.message ?? 'Error al cargar el dashboard');
+      }
       setLoading(false);
     }
     load();
@@ -52,6 +56,12 @@ export function DashboardPage() {
     <AppLayout
       title={`${greeting()}, ${user?.firstName}`}
     >
+      {error && (
+        <div className="alert alert-error" style={{ marginBottom: 20 }}>
+          <span>✕</span><span>{error}</span>
+        </div>
+      )}
+
       {/* Stats */}
       <div className="stats-grid">
         {[

@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:4000/api';
+const BASE_URL = import.meta.env.VITE_API_URL ?? '/api';
 
 export const api = axios.create({
   baseURL: BASE_URL
@@ -12,10 +12,21 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
+// Endpoints que NO deben disparar refresh/redirect al recibir 401
+const AUTH_ENDPOINTS = ['/auth/login', '/auth/refresh'];
+
 api.interceptors.response.use(
   (response) => response,
   async (error) => {
     const originalRequest = error.config;
+    const requestUrl = originalRequest?.url ?? '';
+
+    // No interceptar 401 en endpoints de auth (login, refresh)
+    const isAuthEndpoint = AUTH_ENDPOINTS.some((ep) => requestUrl.endsWith(ep));
+    if (isAuthEndpoint) {
+      return Promise.reject(error);
+    }
+
     if (error.response?.status === 401 && !originalRequest._retry) {
       originalRequest._retry = true;
       const refreshToken = localStorage.getItem('refreshToken');
@@ -35,8 +46,10 @@ api.interceptors.response.use(
         }
       } else {
         localStorage.removeItem('accessToken');
+        localStorage.removeItem('refreshToken');
         localStorage.removeItem('user');
         window.location.href = '/';
+        return Promise.reject(error);
       }
     }
     return Promise.reject(error);
@@ -44,7 +57,7 @@ api.interceptors.response.use(
 );
 
 export function getFilesBaseUrl(): string {
-  return import.meta.env.VITE_FILES_URL ?? 'http://localhost:4000/files';
+  return import.meta.env.VITE_FILES_URL ?? '/files';
 }
 
 /** Devuelve el token de acceso para uso en headers personalizados (ej: CornerstoneJS) */

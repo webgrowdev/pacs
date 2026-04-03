@@ -52,7 +52,9 @@ export function StudiesPage() {
       ]);
       setStudies(studiesRes.data);
       setPatients(patientsRes.data);
-    } catch {}
+    } catch (err: any) {
+      console.error('[STUDIES]', err);
+    }
     setLoading(false);
   };
 

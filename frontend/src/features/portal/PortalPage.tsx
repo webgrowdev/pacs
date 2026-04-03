@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../lib/auth';
 import { api } from '../../lib/api';
 
@@ -33,6 +34,7 @@ interface PatientProfile {
 
 export function PortalPage() {
   const { user, logout } = useAuth();
+  const navigate = useNavigate();
   const [results, setResults] = useState<StudyResult[]>([]);
   const [profile, setProfile] = useState<PatientProfile | null>(null);
   const [loading, setLoading] = useState(true);
@@ -99,7 +101,7 @@ export function PortalPage() {
           )}
           <button
             className="btn btn-ghost btn-sm"
-            onClick={logout}
+            onClick={async () => { await logout(); navigate('/'); }}
             style={{ color: 'var(--gray-500)' }}
           >
             ⎋ Salir
