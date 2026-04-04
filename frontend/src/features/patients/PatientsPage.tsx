@@ -25,26 +25,35 @@ export function PatientsPage() {
   const isAdmin = user?.role === 'ADMIN';
 
   const [patients, setPatients] = useState<Patient[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState('');
+  const [total,    setTotal]    = useState(0);
+  const [page,     setPage]     = useState(1);
+  const [loading,  setLoading]  = useState(true);
+  const [search,   setSearch]   = useState('');
   const [showModal, setShowModal] = useState(false);
-  const [editing, setEditing] = useState<Patient | null>(null);
-  const [form, setForm] = useState(EMPTY_FORM);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
+  const [editing,  setEditing]  = useState<Patient | null>(null);
+  const [form,     setForm]     = useState(EMPTY_FORM);
+  const [saving,   setSaving]   = useState(false);
+  const [error,    setError]    = useState('');
 
-  const load = async () => {
+  const LIMIT = 50;
+
+  const load = async (p = page) => {
     setLoading(true);
     try {
-      const { data } = await api.get('/patients', { params: search ? { search } : {} });
-      setPatients(data);
+      const params: any = { page: p, limit: LIMIT };
+      if (search) params.search = search;
+      const { data } = await api.get('/patients', { params });
+      // API now returns { data, total, page, limit }
+      setPatients(Array.isArray(data) ? data : data.data ?? []);
+      setTotal(data.total ?? (Array.isArray(data) ? data.length : 0));
     } catch (err: any) {
       console.error('[PATIENTS]', err);
     }
     setLoading(false);
   };
 
-  useEffect(() => { load(); }, [search]);
+  useEffect(() => { setPage(1); load(1); }, [search]);
+  useEffect(() => { if (page > 1) load(page); }, [page]);
 
   const openCreate = () => {
     setEditing(null);
@@ -89,7 +98,7 @@ export function PatientsPage() {
     }
   };
 
-  const filteredPatients = patients;
+  const totalPages = Math.ceil(total / LIMIT);
 
   return (
     <AppLayout
@@ -114,7 +123,7 @@ export function PatientsPage() {
           />
         </div>
         <span className="text-sm text-muted">
-          {loading ? 'Cargando...' : `${filteredPatients.length} paciente${filteredPatients.length !== 1 ? 's' : ''}`}
+          {loading ? 'Cargando...' : `${total} paciente${total !== 1 ? 's' : ''}`}
         </span>
       </div>
 
@@ -135,7 +144,7 @@ export function PatientsPage() {
           <tbody>
             {loading ? (
               <tr><td colSpan={7}><div className="empty-state"><div className="spinner" style={{ margin: '0 auto' }} /></div></td></tr>
-            ) : filteredPatients.length === 0 ? (
+            ) : patients.length === 0 ? (
               <tr>
                 <td colSpan={7}>
                   <div className="empty-state">
@@ -146,7 +155,7 @@ export function PatientsPage() {
                 </td>
               </tr>
             ) : (
-              filteredPatients.map((p) => (
+              patients.map((p) => (
                 <tr key={p.id}>
                   <td><span className="badge badge-gray">{p.internalCode}</span></td>
                   <td className="font-medium">{p.lastName}, {p.firstName}</td>
@@ -158,6 +167,13 @@ export function PatientsPage() {
                   </td>
                   <td>
                     <div style={{ display: 'flex', gap: 6 }}>
+                      <Link
+                        to={`/patients/${p.id}`}
+                        className="btn btn-ghost btn-sm"
+                        title="Ver detalle"
+                      >
+                        Detalle
+                      </Link>
                       <Link
                         to={`/studies?patientId=${p.id}`}
                         className="btn btn-ghost btn-sm"
@@ -178,6 +194,15 @@ export function PatientsPage() {
           </tbody>
         </table>
       </div>
+
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'center', marginTop: 16, alignItems: 'center' }}>
+          <button className="btn btn-ghost btn-sm" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page <= 1}>← Anterior</button>
+          <span className="text-sm text-muted">Página {page} de {totalPages}</span>
+          <button className="btn btn-ghost btn-sm" onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page >= totalPages}>Siguiente →</button>
+        </div>
+      )}
 
       {/* Modal */}
       <AnimatePresence>

@@ -46,12 +46,14 @@ export function StudiesPage() {
     try {
       const params: any = {};
       if (patientIdFilter) params.patientId = patientIdFilter;
+      params.limit = 200;
       const [studiesRes, patientsRes] = await Promise.all([
         api.get('/studies', { params }),
-        api.get('/patients')
+        api.get('/patients', { params: { limit: 200 } })
       ]);
-      setStudies(studiesRes.data);
-      setPatients(patientsRes.data);
+      // APIs return paginated { data, total } or plain arrays
+      setStudies(Array.isArray(studiesRes.data) ? studiesRes.data : studiesRes.data.data ?? []);
+      setPatients(Array.isArray(patientsRes.data) ? patientsRes.data : patientsRes.data.data ?? []);
     } catch (err: any) {
       console.error('[STUDIES]', err);
     }

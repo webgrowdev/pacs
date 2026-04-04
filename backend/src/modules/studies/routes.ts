@@ -11,6 +11,7 @@ import { requireAuth, requireRole, AuthRequest } from '../../middleware/auth.js'
 import { studyStoragePath } from '../../storage/file-storage.js';
 import { logAudit } from '../../middleware/audit.js';
 import { createNotification } from '../notifications/service.js';
+import { sendStudyAssignedEmail } from '../../utils/email.js';
 
 const upload = multer({
   dest: path.resolve(process.cwd(), 'storage/tmp'),
@@ -20,34 +21,57 @@ const upload = multer({
 export const studiesRouter = Router();
 studiesRouter.use(requireAuth as any);
 
-// Worklist para médicos y admins con filtros
+// Valid enum values for validation
+const VALID_STATUSES  = ['UPLOADED', 'IN_REVIEW', 'REPORTED', 'PUBLISHED'] as const;
+const VALID_MODALITIES = ['CT', 'MRI', 'RX', 'US', 'PET', 'NM', 'MG', 'XA', 'CR', 'DR', 'DX', 'PT', 'SC', 'OT'] as const;
+
+// Worklist para médicos y admins con filtros (con paginación)
 studiesRouter.get('/worklist', requireRole('ADMIN', 'DOCTOR') as any, async (req: AuthRequest, res: any) => {
   try {
-    const status = req.query.status ? String(req.query.status) : undefined;
-    const modality = req.query.modality ? String(req.query.modality) : undefined;
+    const statusParam   = req.query.status   ? String(req.query.status)   : undefined;
+    const modalityParam = req.query.modality ? String(req.query.modality) : undefined;
+
+    // Validate enum values — reject unknown values to prevent injection/enumeration
+    if (statusParam && !VALID_STATUSES.includes(statusParam as any)) {
+      return res.status(400).json({ message: `Estado inválido. Valores permitidos: ${VALID_STATUSES.join(', ')}` });
+    }
+
     const dateFrom = req.query.dateFrom ? new Date(String(req.query.dateFrom)) : undefined;
-    const dateTo = req.query.dateTo ? new Date(String(req.query.dateTo)) : undefined;
+    const dateTo   = req.query.dateTo   ? new Date(String(req.query.dateTo))   : undefined;
+
+    // Validate dates
+    if (dateFrom && isNaN(dateFrom.getTime())) return res.status(400).json({ message: 'dateFrom inválido' });
+    if (dateTo   && isNaN(dateTo.getTime()))   return res.status(400).json({ message: 'dateTo inválido' });
+
+    const page  = Math.max(1, parseInt(String(req.query.page  ?? '1')));
+    const limit = Math.min(200, Math.max(1, parseInt(String(req.query.limit ?? '100'))));
+    const skip  = (page - 1) * limit;
 
     const where: any = {};
-    if (status) where.status = status;
-    if (modality) where.modality = modality;
+    if (statusParam)   where.status   = statusParam;
+    if (modalityParam) where.modality = modalityParam;
     if (dateFrom || dateTo) where.studyDate = { gte: dateFrom, lte: dateTo };
 
     if (req.user?.role === 'DOCTOR') {
       where.OR = [{ assignedDoctorId: req.user.sub }, { assignedDoctorId: null }];
     }
 
-    const studies = await prisma.study.findMany({
-      where,
-      include: {
-        patient: { select: { id: true, firstName: true, lastName: true, internalCode: true, documentId: true } },
-        assignedDoctor: { select: { id: true, firstName: true, lastName: true } },
-        reports: { select: { id: true, status: true } }
-      },
-      orderBy: { studyDate: 'desc' }
-    });
+    const [studies, total] = await Promise.all([
+      prisma.study.findMany({
+        where,
+        include: {
+          patient:        { select: { id: true, firstName: true, lastName: true, internalCode: true, documentId: true } },
+          assignedDoctor: { select: { id: true, firstName: true, lastName: true } },
+          reports:        { select: { id: true, status: true } }
+        },
+        orderBy: { studyDate: 'desc' },
+        skip,
+        take: limit
+      }),
+      prisma.study.count({ where })
+    ]);
 
-    return res.json(studies);
+    return res.json({ data: studies, total, page, limit });
   } catch (err) {
     console.error('[STUDIES/WORKLIST]', err);
     return res.status(500).json({ message: 'Error al cargar worklist' });
@@ -62,10 +86,11 @@ studiesRouter.post('/:id/assign', requireRole('ADMIN') as any, async (req: AuthR
     if (!doctor || doctor.role.name !== 'DOCTOR') return res.status(400).json({ message: 'Doctor inválido' });
 
     const study = await prisma.study.update({
-      where: { id: req.params.id },
+      where: { id: String(req.params.id) },
       data: { assignedDoctorId: doctorId, status: StudyStatus.IN_REVIEW }
     });
     await createNotification(doctorId, 'Nuevo estudio asignado', `Tiene un nuevo estudio (${study.id.slice(0, 8)}) para informar.`, 'STUDY_ASSIGNED');
+    sendStudyAssignedEmail(doctor, study).catch(() => {});
     await logAudit(req, 'STUDY_ASSIGNED', 'STUDY', study.id, { doctorId });
     return res.json(study);
   } catch (err: any) {
@@ -75,25 +100,35 @@ studiesRouter.post('/:id/assign', requireRole('ADMIN') as any, async (req: AuthR
   }
 });
 
-// Listar estudios
+// Listar estudios (con paginación)
 studiesRouter.get('/', requireRole('ADMIN', 'DOCTOR') as any, async (req: AuthRequest, res: any) => {
   try {
     const patientId = req.query.patientId ? String(req.query.patientId) : undefined;
+    const page  = Math.max(1, parseInt(String(req.query.page  ?? '1')));
+    const limit = Math.min(200, Math.max(1, parseInt(String(req.query.limit ?? '100'))));
+    const skip  = (page - 1) * limit;
+
     const where: any = {};
     if (patientId) where.patientId = patientId;
     if (req.user?.role === 'DOCTOR') {
       where.OR = [{ assignedDoctorId: req.user.sub }, { assignedDoctorId: null }];
     }
 
-    const studies = await prisma.study.findMany({
-      where,
-      include: {
-        patient: { select: { id: true, firstName: true, lastName: true, internalCode: true } },
-        reports: { select: { id: true, status: true } }
-      },
-      orderBy: { studyDate: 'desc' }
-    });
-    return res.json(studies);
+    const [studies, total] = await Promise.all([
+      prisma.study.findMany({
+        where,
+        include: {
+          patient: { select: { id: true, firstName: true, lastName: true, internalCode: true } },
+          reports: { select: { id: true, status: true } }
+        },
+        orderBy: { studyDate: 'desc' },
+        skip,
+        take: limit
+      }),
+      prisma.study.count({ where })
+    ]);
+
+    return res.json({ data: studies, total, page, limit });
   } catch (err) {
     console.error('[STUDIES/GET]', err);
     return res.status(500).json({ message: 'Error al obtener estudios' });
@@ -104,7 +139,7 @@ studiesRouter.get('/', requireRole('ADMIN', 'DOCTOR') as any, async (req: AuthRe
 studiesRouter.get('/:id', requireRole('ADMIN', 'DOCTOR') as any, async (req: AuthRequest, res: any) => {
   try {
     const study = await prisma.study.findUnique({
-      where: { id: req.params.id },
+      where: { id: String(req.params.id) },
       include: {
         patient: true,
         dicomFiles: { orderBy: { instanceNumber: 'asc' } },

@@ -1,35 +1,47 @@
 import { Router } from 'express';
 import { ReportStatus, StudyStatus } from '@prisma/client';
+import crypto from 'node:crypto';
 import { z } from 'zod';
 import { prisma } from '../../config/prisma.js';
 import { requireAuth, requireRole, AuthRequest } from '../../middleware/auth.js';
 import { generateClinicalPdf } from './pdf-service.js';
 import { logAudit } from '../../middleware/audit.js';
 import { createNotification } from '../notifications/service.js';
+import { sendReportFinalizedEmail } from '../../utils/email.js';
 import { toFileUrl } from '../../storage/file-storage.js';
 import { env } from '../../config/env.js';
 
 export const reportsRouter = Router();
 reportsRouter.use(requireAuth as any);
 
-// Listar informes (admin ve todos, médico ve los suyos)
+// Listar informes (con paginación — admin ve todos, médico ve los suyos)
 reportsRouter.get('/', requireRole('ADMIN', 'DOCTOR') as any, async (req: AuthRequest, res: any) => {
   try {
     const where = req.user?.role === 'DOCTOR' ? { doctorId: req.user.sub } : {};
-    const reports = await prisma.report.findMany({
-      where,
-      include: {
-        study: {
-          include: {
-            patient: { select: { id: true, firstName: true, lastName: true, internalCode: true } }
-          }
+    const page  = Math.max(1, parseInt(String(req.query.page  ?? '1')));
+    const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit ?? '50'))));
+    const skip  = (page - 1) * limit;
+
+    const [reports, total] = await Promise.all([
+      prisma.report.findMany({
+        where,
+        include: {
+          study: {
+            include: {
+              patient: { select: { id: true, firstName: true, lastName: true, internalCode: true } }
+            }
+          },
+          doctor: { select: { id: true, firstName: true, lastName: true } },
+          measurements: true
         },
-        doctor: { select: { id: true, firstName: true, lastName: true } },
-        measurements: true
-      },
-      orderBy: { updatedAt: 'desc' }
-    });
-    return res.json(reports);
+        orderBy: { updatedAt: 'desc' },
+        skip,
+        take: limit
+      }),
+      prisma.report.count({ where })
+    ]);
+
+    return res.json({ data: reports, total, page, limit });
   } catch (err) {
     console.error('[REPORTS/GET]', err);
     return res.status(500).json({ message: 'Error al obtener informes' });
@@ -40,7 +52,7 @@ reportsRouter.get('/', requireRole('ADMIN', 'DOCTOR') as any, async (req: AuthRe
 reportsRouter.get('/:id', requireRole('ADMIN', 'DOCTOR') as any, async (req: AuthRequest, res: any) => {
   try {
     const report = await prisma.report.findUnique({
-      where: { id: req.params.id },
+      where: { id: String(req.params.id) },
       include: {
         study: { include: { patient: true } },
         doctor: { select: { id: true, firstName: true, lastName: true } },
@@ -116,7 +128,7 @@ reportsRouter.put('/:id', requireRole('DOCTOR', 'ADMIN') as any, async (req: Aut
   if (!parsed.success) return res.status(400).json({ message: 'Payload inválido', errors: parsed.error.flatten() });
 
   try {
-    const report = await prisma.report.findUnique({ where: { id: req.params.id } });
+    const report = await prisma.report.findUnique({ where: { id: String(req.params.id) } });
     if (!report) return res.status(404).json({ message: 'Informe no encontrado' });
 
     // Solo el médico dueño o admin pueden editar
@@ -130,7 +142,7 @@ reportsRouter.put('/:id', requireRole('DOCTOR', 'ADMIN') as any, async (req: Aut
     }
 
     const updated = await prisma.report.update({
-      where: { id: req.params.id },
+      where: { id: String(req.params.id) },
       data: {
         findings: parsed.data.findings,
         conclusion: parsed.data.conclusion,
@@ -161,7 +173,7 @@ reportsRouter.put('/:id', requireRole('DOCTOR', 'ADMIN') as any, async (req: Aut
 reportsRouter.post('/:id/finalize', requireRole('DOCTOR', 'ADMIN') as any, async (req: AuthRequest, res: any) => {
   try {
     const report = await prisma.report.findUnique({
-      where: { id: req.params.id },
+      where: { id: String(req.params.id) },
       include: {
         study: { include: { patient: true } },
         doctor: true,
@@ -218,7 +230,25 @@ reportsRouter.post('/:id/finalize', requireRole('DOCTOR', 'ADMIN') as any, async
       await createNotification(patientAccess.userId, 'Nuevo informe disponible', 'Su informe médico fue publicado en el portal.', 'REPORT_PUBLISHED').catch(() => {});
     }
 
-    await logAudit(req, 'REPORT_FINALIZED', 'REPORT', report.id, { pdfPath: pdfRelativePath });
+    if (patient.email) {
+      sendReportFinalizedEmail(patient.email, updated).catch(() => {});
+    }
+
+    // ANMAT Disposición 2318/02 — detailed finalization audit with content hash for integrity
+    const contentHash = crypto
+      .createHash('sha256')
+      .update(`${report.findings}|${report.conclusion}`)
+      .digest('hex');
+
+    await logAudit(req, 'REPORT_FINALIZED', 'REPORT', report.id, {
+      previousStatus:  report.status,
+      newStatus:       ReportStatus.FINAL,
+      doctorId:        req.user!.sub,
+      patientId:       patient.id,
+      pdfPath:         pdfRelativePath,
+      contentHash,               // SHA-256 of findings+conclusion for tamper detection
+      patientNotified: !!patient.email
+    });
 
     return res.json({
       ...updated,

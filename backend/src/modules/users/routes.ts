@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { prisma } from '../../config/prisma.js';
 import { requireAuth, requireRole, AuthRequest } from '../../middleware/auth.js';
 import { logAudit } from '../../middleware/audit.js';
+import { validatePasswordComplexity } from '../../utils/security.js';
 
 export const usersRouter = Router();
 usersRouter.use(requireAuth as any, requireRole('ADMIN') as any);
@@ -38,6 +39,15 @@ usersRouter.post('/', async (req: AuthRequest, res: any) => {
   const parsed = createUserSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ message: 'Datos inválidos', errors: parsed.error.flatten() });
 
+  // HIPAA §164.308(a)(5)(ii)(A) — enforce password complexity for all user creation
+  const complexity = validatePasswordComplexity(parsed.data.password);
+  if (!complexity.valid) {
+    return res.status(400).json({
+      message: 'La contraseña no cumple los requisitos de seguridad',
+      errors: complexity.errors
+    });
+  }
+
   try {
     const role = await prisma.role.findUnique({ where: { name: parsed.data.roleName } });
     if (!role) return res.status(400).json({ message: 'Rol inválido' });
@@ -68,11 +78,11 @@ usersRouter.post('/', async (req: AuthRequest, res: any) => {
 // Activar/desactivar usuario
 usersRouter.patch('/:id/toggle-active', async (req: AuthRequest, res: any) => {
   try {
-    const user = await prisma.user.findUnique({ where: { id: req.params.id } });
+    const user = await prisma.user.findUnique({ where: { id: String(req.params.id) } });
     if (!user) return res.status(404).json({ message: 'Usuario no encontrado' });
 
     const updated = await prisma.user.update({
-      where: { id: req.params.id },
+      where: { id: String(req.params.id) },
       data: { isActive: !user.isActive },
       include: { role: true }
     });

@@ -22,7 +22,7 @@ notificationsRouter.get('/my', async (req: AuthRequest, res) => {
 notificationsRouter.post('/:id/read', async (req: AuthRequest, res) => {
   try {
     const updated = await prisma.notification.updateMany({
-      where: { id: req.params.id, userId: req.user!.sub },
+      where: { id: String(req.params.id), userId: req.user!.sub },
       data: { isRead: true }
     });
     if (updated.count === 0) {

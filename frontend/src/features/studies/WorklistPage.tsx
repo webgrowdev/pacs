@@ -25,24 +25,29 @@ const MODALITY_OPTIONS = ['', 'RX', 'TC', 'RM', 'ECO', 'PET', 'MAMM', 'NM'];
 
 export function WorklistPage() {
   const [studies, setStudies] = useState<Study[]>([]);
+  const [total,   setTotal]   = useState(0);
+  const [page,    setPage]    = useState(1);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
+  const [error,   setError]   = useState('');
+
+  const LIMIT = 100;
   const [statusFilter, setStatusFilter] = useState('');
   const [modalityFilter, setModalityFilter] = useState('');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
 
-  const load = async () => {
+  const load = async (p = page) => {
     setLoading(true);
     setError('');
     try {
-      const params: any = {};
-      if (statusFilter) params.status = statusFilter;
+      const params: any = { page: p, limit: LIMIT };
+      if (statusFilter)   params.status   = statusFilter;
       if (modalityFilter) params.modality = modalityFilter;
       if (dateFrom) params.dateFrom = new Date(dateFrom + 'T00:00:00').toISOString();
-      if (dateTo) params.dateTo = new Date(dateTo + 'T23:59:59').toISOString();
+      if (dateTo)   params.dateTo   = new Date(dateTo   + 'T23:59:59').toISOString();
       const { data } = await api.get('/studies/worklist', { params });
-      setStudies(data);
+      setStudies(Array.isArray(data) ? data : data.data ?? []);
+      setTotal(data.total ?? (Array.isArray(data) ? data.length : 0));
     } catch (err: any) {
       console.error('[WORKLIST]', err);
       setError(err?.response?.data?.message ?? 'Error al cargar la worklist');
@@ -50,7 +55,8 @@ export function WorklistPage() {
     setLoading(false);
   };
 
-  useEffect(() => { load(); }, [statusFilter, modalityFilter, dateFrom, dateTo]);
+  useEffect(() => { setPage(1); load(1); }, [statusFilter, modalityFilter, dateFrom, dateTo]);
+  useEffect(() => { if (page > 1) load(page); }, [page]);
 
   const clearFilters = () => {
     setStatusFilter('');
@@ -103,9 +109,9 @@ export function WorklistPage() {
       {/* Results count */}
       <div className="flex items-center justify-between mb-4">
         <span className="text-sm text-muted">
-          {loading ? 'Cargando...' : `${studies.length} estudio${studies.length !== 1 ? 's' : ''} en worklist`}
+          {loading ? 'Cargando...' : `${total} estudio${total !== 1 ? 's' : ''} en worklist`}
         </span>
-        <button className="btn btn-ghost btn-sm" onClick={load}>⟳ Actualizar</button>
+        <button className="btn btn-ghost btn-sm" onClick={() => load(page)}>⟳ Actualizar</button>
       </div>
 
       {/* Table */}
@@ -174,6 +180,15 @@ export function WorklistPage() {
           </tbody>
         </table>
       </div>
+
+      {/* Pagination */}
+      {Math.ceil(total / LIMIT) > 1 && (
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'center', marginTop: 16, alignItems: 'center' }}>
+          <button className="btn btn-ghost btn-sm" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page <= 1}>← Anterior</button>
+          <span className="text-sm text-muted">Página {page} de {Math.ceil(total / LIMIT)}</span>
+          <button className="btn btn-ghost btn-sm" onClick={() => setPage(p => Math.min(Math.ceil(total / LIMIT), p + 1))} disabled={page >= Math.ceil(total / LIMIT)}>Siguiente →</button>
+        </div>
+      )}
     </AppLayout>
   );
 }

@@ -67,13 +67,13 @@ export function PortalPage() {
   return (
     <div style={{
       minHeight: '100vh',
-      background: 'linear-gradient(155deg, var(--gray-950) 0%, #0f2442 50%, var(--gray-950) 100%)',
+      background: 'linear-gradient(155deg, #f0f9ff 0%, #eff6ff 50%, #f8fafc 100%)',
       padding: '0'
     }}>
       {/* Portal Header */}
       <header style={{
-        background: '#0d1b35',
-        borderBottom: '1px solid rgba(255,255,255,0.07)',
+        background: '#1e3a5f',
+        borderBottom: '1px solid rgba(255,255,255,0.08)',
         padding: '0 32px',
         height: 64,
         display: 'flex',
@@ -88,7 +88,7 @@ export function PortalPage() {
           <span style={{ fontSize: 18, fontWeight: 700, color: '#fff' }}>
             PACS<span style={{ color: '#38bdf8' }}>Med</span>
           </span>
-          <span style={{ fontSize: 12, color: 'var(--gray-500)', marginLeft: 8, background: 'rgba(255,255,255,0.06)', padding: '2px 8px', borderRadius: 99 }}>
+          <span style={{ fontSize: 12, color: 'var(--gray-500)', marginLeft: 8, background: 'rgba(255,255,255,0.15)', padding: '2px 8px', borderRadius: 99 }}>
             Portal del Paciente
           </span>
         </div>
@@ -116,7 +116,7 @@ export function PortalPage() {
           animate={{ opacity: 1, y: 0 }}
           style={{ marginBottom: 28 }}
         >
-          <h1 style={{ fontSize: 24, fontWeight: 700, color: '#fff', marginBottom: 6 }}>
+          <h1 style={{ fontSize: 24, fontWeight: 700, color: 'var(--gray-900)', marginBottom: 6 }}>
             Bienvenido/a, {profile?.firstName}
           </h1>
           <p style={{ color: 'var(--gray-500)', fontSize: 14 }}>
@@ -148,7 +148,7 @@ export function PortalPage() {
               ].map(({ label, value }) => (
                 <div key={label}>
                   <div style={{ color: 'var(--gray-500)', marginBottom: 2 }}>{label}</div>
-                  <div style={{ color: 'var(--gray-200)', fontWeight: 500 }}>{value}</div>
+                  <div style={{ color: 'var(--gray-800)', fontWeight: 500 }}>{value}</div>
                 </div>
               ))}
             </div>
@@ -164,7 +164,7 @@ export function PortalPage() {
 
         {/* Studies */}
         <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <h2 style={{ fontSize: 15, fontWeight: 600, color: 'var(--gray-300)' }}>
+          <h2 style={{ fontSize: 15, fontWeight: 600, color: 'var(--gray-700)' }}>
             Mis estudios ({results.length})
           </h2>
         </div>
@@ -192,7 +192,7 @@ export function PortalPage() {
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                     <span className="badge badge-blue">{s.modality}</span>
-                    <span style={{ fontWeight: 600, fontSize: 14, color: 'var(--gray-200)' }}>
+                    <span style={{ fontWeight: 600, fontSize: 14, color: 'var(--gray-900)' }}>
                       {s.description || `Estudio ${s.modality}`}
                     </span>
                     <span style={{ fontSize: 13, color: 'var(--gray-500)' }}>{formatDate(s.studyDate)}</span>
@@ -231,30 +231,30 @@ export function PortalPage() {
 
                         {s.report.patientSummary && (
                           <div style={{
-                            background: 'rgba(22,163,74,0.08)',
+                            background: 'rgba(22,163,74,0.06)',
                             border: '1px solid rgba(22,163,74,0.2)',
                             borderRadius: 10,
                             padding: '14px 16px'
                           }}>
-                            <div style={{ fontSize: 11, fontWeight: 600, color: '#86efac', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>
+                            <div style={{ fontSize: 11, fontWeight: 600, color: '#166534', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>
                               Resumen de su informe
                             </div>
-                            <p style={{ fontSize: 14, color: 'var(--gray-300)', lineHeight: 1.65 }}>
+                            <p style={{ fontSize: 14, color: 'var(--gray-700)', lineHeight: 1.65 }}>
                               {s.report.patientSummary}
                             </p>
                           </div>
                         )}
 
                         <div style={{
-                          background: 'rgba(255,255,255,0.03)',
-                          border: '1px solid var(--gray-700)',
+                          background: 'var(--gray-50)',
+                          border: '1px solid var(--gray-200)',
                           borderRadius: 10,
                           padding: '14px 16px'
                         }}>
-                          <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>
+                          <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--gray-500)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>
                             Conclusión médica
                           </div>
-                          <p style={{ fontSize: 14, color: 'var(--gray-400)', lineHeight: 1.65, fontStyle: 'italic' }}>
+                          <p style={{ fontSize: 14, color: 'var(--gray-600)', lineHeight: 1.65, fontStyle: 'italic' }}>
                             {s.report.conclusion}
                           </p>
                         </div>
@@ -293,7 +293,7 @@ export function PortalPage() {
           </div>
         )}
 
-        <p style={{ fontSize: 12, color: 'var(--gray-600)', textAlign: 'center', marginTop: 40 }}>
+        <p style={{ fontSize: 12, color: 'var(--gray-400)', textAlign: 'center', marginTop: 40 }}>
           Sus datos son confidenciales y están protegidos. Solo usted puede acceder a esta información.
         </p>
       </div>

@@ -28,6 +28,12 @@ enum StudyStatus {
   PUBLISHED
 }
 
+enum StudySource {
+  MANUAL_UPLOAD
+  DICOM_SCP
+  DICOMWEB
+}
+
 enum ReportStatus {
   DRAFT
   FINAL
@@ -41,22 +47,23 @@ model Role {
 }
 
 model User {
-  id             String      @id @default(cuid())
-  email          String      @unique
-  passwordHash   String
-  firstName      String
-  lastName       String
-  isActive       Boolean     @default(true)
-  roleId         String
-  role           Role        @relation(fields: [roleId], references: [id])
-  doctorReports  Report[]    @relation("DoctorReports")
-  uploadedStudies Study[]    @relation("UploaderStudies")
-  assignedStudies Study[]    @relation("AssignedDoctor")
-  patientAccess  PatientPortalAccess?
-  auditLogs      AuditLog[]
-  notifications  Notification[]
-  createdAt      DateTime    @default(now())
-  updatedAt      DateTime    @updatedAt
+  id                  String      @id @default(cuid())
+  email               String      @unique
+  passwordHash        String
+  firstName           String
+  lastName            String
+  isActive            Boolean     @default(true)
+  mustChangePassword  Boolean     @default(false)
+  roleId              String
+  role                Role        @relation(fields: [roleId], references: [id])
+  doctorReports       Report[]    @relation("DoctorReports")
+  uploadedStudies     Study[]     @relation("UploaderStudies")
+  assignedStudies     Study[]     @relation("AssignedDoctor")
+  patientAccess       PatientPortalAccess?
+  auditLogs           AuditLog[]
+  notifications       Notification[]
+  createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @updatedAt
 }
 
 model Patient {
@@ -88,6 +95,9 @@ model Study {
   uploadedBy      User            @relation("UploaderStudies", fields: [uploadedById], references: [id])
   assignedDoctorId String?
   assignedDoctor  User?           @relation("AssignedDoctor", fields: [assignedDoctorId], references: [id])
+  source          StudySource     @default(MANUAL_UPLOAD)
+  studyInstanceUid String?
+  callingAeTitle  String?
   series          StudySeries[]
   dicomFiles      DicomFile[]
   reports         Report[]
@@ -180,6 +190,8 @@ model AuditLog {
   action      String
   entityType  String
   entityId    String?
+  ipAddress   String?
+  userAgent   String?
   payload     Json?
   createdAt   DateTime @default(now())
 }

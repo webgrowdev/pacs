@@ -16,9 +16,16 @@ export function LoginPage() {
     setError('');
     setLoading(true);
     try {
-      await login(email, password);
-      // Redirigir directamente según el rol para evitar flash de redirección
-      const stored = localStorage.getItem('user');
+      const result = await login(email, password);
+
+      // If server requires password change (first login or temp password), redirect immediately
+      if (result.mustChangePassword) {
+        navigate('/change-password', { replace: true });
+        return;
+      }
+
+      // Redirigir según rol
+      const stored = sessionStorage.getItem('pacsUser');
       const role = stored ? JSON.parse(stored).role : null;
       navigate(role === 'PATIENT' ? '/portal' : '/dashboard', { replace: true });
     } catch (err: any) {

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import * as cornerstone from '@cornerstonejs/core';
 import * as csTools from '@cornerstonejs/tools';
-import { getAccessToken } from '../../lib/api';
+import { getAccessToken } from '../../lib/auth';
 
 // Inicialización global (solo una vez por sesión)
 let cornerstoneInitialized = false;

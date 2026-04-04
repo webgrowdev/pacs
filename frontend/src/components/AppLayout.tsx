@@ -16,6 +16,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: '/studies', label: 'Estudios', icon: '⊞', roles: ['ADMIN', 'DOCTOR'] },
   { to: '/patients', label: 'Pacientes', icon: '♥', roles: ['ADMIN', 'DOCTOR'] },
   { to: '/reports', label: 'Informes', icon: '✎', roles: ['ADMIN', 'DOCTOR'] },
+  { to: '/admin', label: 'Admin', icon: '⚙', roles: ['ADMIN'] },
   { to: '/portal', label: 'Mi Portal', icon: '⊕', roles: ['PATIENT'] }
 ];
 

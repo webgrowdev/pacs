@@ -477,13 +477,17 @@ curl -X POST http://localhost:4000/api/users \
 
 ## Roadmap (Fase 3)
 
-- [ ] Firma digital real del informe (SIGNED status)
-- [ ] Integración con LLM real (Claude API) para IA editorial avanzada
-- [ ] Multitenancy (múltiples instituciones)
+- [ ] Firma del informe (SIGNED status)
+- [ ] Integración con LLM real (OPENAI/GOOGLE) para IA editorial avanzada
 - [ ] Gestión de acceso de portal desde el admin
 - [ ] Notificaciones por email
 - [ ] Visor DICOMweb (WADO-RS) con servidor Orthanc
 - [ ] Dashboard analítico con métricas
 - [ ] Exportación de auditoría
-- [ ] 2FA para médicos y admins
 - [ ] Carga masiva vía SFTP
+
+## Roadmap (Fase 4)
+
+- [ ] Firma digital real del informe (SIGNED status)
+- [ ] Multitenancy (múltiples instituciones)
+- [ ] 2FA para médicos y admins

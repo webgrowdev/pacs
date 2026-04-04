@@ -29,8 +29,11 @@ export function ReportsPage() {
   const [selected, setSelected] = useState<Report | null>(null);
 
   useEffect(() => {
-    api.get('/reports')
-      .then((r) => setReports(r.data))
+    api.get('/reports', { params: { limit: 100 } })
+      .then((r) => {
+        // API returns paginated { data, total } or plain array
+        setReports(Array.isArray(r.data) ? r.data : r.data.data ?? []);
+      })
       .catch(() => {})
       .finally(() => setLoading(false));
   }, []);

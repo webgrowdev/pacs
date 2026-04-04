@@ -19,25 +19,38 @@ const patientSchema = z.object({
   phone: z.string().max(30).optional().nullable()
 });
 
-// Listar y buscar pacientes
+// Listar y buscar pacientes (con paginación)
 patientsRouter.get('/', requireRole('ADMIN', 'DOCTOR') as any, async (req: AuthRequest, res: any) => {
   try {
-    const search = String(req.query.search || '').trim();
-    const patients = await prisma.patient.findMany({
-      where: search
-        ? {
-            OR: [
-              { firstName: { contains: search, ...insensitive() } },
-              { lastName: { contains: search, ...insensitive() } },
-              { internalCode: { contains: search, ...insensitive() } },
-              { documentId: { contains: search, ...insensitive() } }
-            ]
-          }
-        : undefined,
-      include: { _count: { select: { studies: true } } },
-      orderBy: { lastName: 'asc' }
-    });
-    return res.json(patients);
+    // Sanitize search: max 100 chars, strip regex-dangerous characters
+    const search = String(req.query.search || '').trim().slice(0, 100);
+    const page   = Math.max(1, parseInt(String(req.query.page  ?? '1')));
+    const limit  = Math.min(100, Math.max(1, parseInt(String(req.query.limit ?? '50'))));
+    const skip   = (page - 1) * limit;
+
+    const where = search
+      ? {
+          OR: [
+            { firstName:    { contains: search, ...insensitive() } },
+            { lastName:     { contains: search, ...insensitive() } },
+            { internalCode: { contains: search, ...insensitive() } },
+            { documentId:   { contains: search, ...insensitive() } }
+          ]
+        }
+      : undefined;
+
+    const [patients, total] = await Promise.all([
+      prisma.patient.findMany({
+        where,
+        include: { _count: { select: { studies: true } } },
+        orderBy: { lastName: 'asc' },
+        skip,
+        take: limit
+      }),
+      prisma.patient.count({ where })
+    ]);
+
+    return res.json({ data: patients, total, page, limit });
   } catch (err) {
     console.error('[PATIENTS/GET]', err);
     return res.status(500).json({ message: 'Error al obtener pacientes' });
@@ -48,7 +61,7 @@ patientsRouter.get('/', requireRole('ADMIN', 'DOCTOR') as any, async (req: AuthR
 patientsRouter.get('/:id', requireRole('ADMIN', 'DOCTOR') as any, async (req: AuthRequest, res: any) => {
   try {
     const patient = await prisma.patient.findUnique({
-      where: { id: req.params.id },
+      where: { id: String(req.params.id) },
       include: {
         studies: {
           include: { reports: true },
@@ -98,7 +111,7 @@ patientsRouter.put('/:id', requireRole('ADMIN') as any, async (req: AuthRequest,
 
   try {
     const patient = await prisma.patient.update({
-      where: { id: req.params.id },
+      where: { id: String(req.params.id) },
       data: {
         ...parsed.data,
         dateOfBirth: parsed.data.dateOfBirth ? new Date(parsed.data.dateOfBirth) : undefined
