@@ -164,12 +164,12 @@ export function ReportsPage() {
 
               <div>
                 <div className="text-xs text-muted" style={{ marginBottom: 4 }}>HALLAZGOS</div>
-                <div style={{ lineHeight: 1.6, color: 'var(--gray-300)' }}>{selected.findings}</div>
+                <div style={{ lineHeight: 1.6, color: 'var(--gray-700)' }}>{selected.findings}</div>
               </div>
 
               <div>
                 <div className="text-xs text-muted" style={{ marginBottom: 4 }}>CONCLUSIÓN</div>
-                <div style={{ lineHeight: 1.6, color: 'var(--gray-300)' }}>{selected.conclusion}</div>
+                <div style={{ lineHeight: 1.6, color: 'var(--gray-700)' }}>{selected.conclusion}</div>
               </div>
 
               {selected.measurements.length > 0 && (
@@ -186,7 +186,7 @@ export function ReportsPage() {
                   Abrir estudio y visor
                 </Link>
                 {selected.pdfPath && (
-                  <a href={`/files/${selected.pdfPath}`} target="_blank" rel="noopener noreferrer" className="btn btn-secondary btn-sm">
+                  <a href={`${getFilesBaseUrl()}/${selected.pdfPath}`} target="_blank" rel="noopener noreferrer" className="btn btn-secondary btn-sm">
                     📄 Descargar PDF
                   </a>
                 )}

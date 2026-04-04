@@ -46,11 +46,12 @@ export function DashboardPage() {
     async function load() {
       try {
         const [studiesRes, patientsRes] = await Promise.all([
-          api.get('/studies'),
-          api.get('/patients')
+          api.get('/studies', { params: { limit: 200 } }),
+          api.get('/patients', { params: { limit: 200 } })
         ]);
-        const studies: any[] = studiesRes.data;
-        const patients: any[] = patientsRes.data;
+        // Both endpoints return paginated { data, total, page, limit }
+        const studies: any[] = Array.isArray(studiesRes.data) ? studiesRes.data : (studiesRes.data.data ?? []);
+        const patients: any[] = Array.isArray(patientsRes.data) ? patientsRes.data : (patientsRes.data.data ?? []);
         setStats({
           patients: patients.length,
           studies: studies.length,

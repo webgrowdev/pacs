@@ -63,5 +63,5 @@ api.interceptors.response.use(
 );
 
 export function getFilesBaseUrl(): string {
-  return import.meta.env.VITE_FILES_URL ?? '/files';
+  return (import.meta as any).env?.VITE_FILES_URL ?? '/files';
 }

@@ -12,7 +12,8 @@
  *   → processDicomBuffer() → Paciente + Estudio + Serie + Archivo en disco
  */
 
-import { Server, Scp, Dataset, constants, association, responses } from 'dcmjs-dimse';
+import dcmjsDimse from 'dcmjs-dimse';
+const { Server, Scp, Dataset, constants, association, responses } = dcmjsDimse;
 import { processDicomBuffer } from './study-processor.js';
 import { prisma } from '../config/prisma.js';
 import { env } from '../config/env.js';
@@ -88,7 +89,7 @@ class PacsScp extends Scp {
 
   cStoreRequest(request: any, callback: (response: any) => void) {
     try {
-      const dataset: Dataset = request.getDataset();
+      const dataset: InstanceType<typeof Dataset> = request.getDataset();
       const buffer: Buffer   = dataset.getDenaturalizedDataset() as unknown as Buffer;
       const callingAe        = this.callingAe;
 
