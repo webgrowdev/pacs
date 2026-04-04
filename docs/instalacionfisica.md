@@ -63,7 +63,7 @@ El sistema corre 100 % en la red local (sin necesidad de internet) y puede servi
 ### Equipo de diagnóstico (modalidad DICOM)
 
 - Cualquier equipo con salida DICOM sobre red TCP/IP (rayos X digital, ecógrafo, tomógrafo, resonancia magnética, mamógrafo, etc.).
-- El equipo debe tener configurado un **AE Title**, una **IP estática** y el puerto **DICOM SCU 104** (o el que use el fabricante).
+- El equipo debe tener configurado un **AE Title**, una **IP estática** y el puerto **DICOM SCP 104** (o el que use el fabricante). El equipo actúa como SCU (cliente que envía) y el servidor PACS actúa como SCP (servidor que recibe).
 
 ### Estaciones de trabajo (clientes)
 
@@ -755,7 +755,10 @@ http://192.168.1.10
 
 ### 13.4 Prueba de carga de estudio DICOM
 
-1. Descargar un archivo DICOM de prueba (disponible en [https://www.dicomlibrary.com](https://www.dicomlibrary.com) — *asumir disponibilidad*).
+1. Obtener un archivo DICOM de prueba. Opciones:
+   - Usar una imagen phantom/fantasma del propio equipo de diagnóstico.
+   - Descargar muestras del repositorio público [The Cancer Imaging Archive (TCIA)](https://www.cancerimagingarchive.net).
+   - Usar cualquier archivo `.dcm` ya disponible en la institución.
 2. En PACsMed:
    - Crear un paciente de prueba.
    - Cargar el archivo `.dcm` o `.zip` con DICOM.
@@ -784,6 +787,24 @@ Con la configuración de PM2 y `systemd`, al reiniciar la mini PC todos los serv
 
 ### 14.2 Backups automáticos de la base de datos
 
+Crear el archivo de credenciales MySQL (sin exponer la contraseña en el script):
+
+```bash
+nano /home/pacsadmin/.my.cnf
+```
+
+```ini
+[client]
+user=pacsuser
+password=PacsM3d_S3guro!
+```
+
+Restringir los permisos del archivo (solo el propietario puede leerlo):
+
+```bash
+chmod 600 /home/pacsadmin/.my.cnf
+```
+
 Crear el script de backup:
 
 ```bash
@@ -795,7 +816,8 @@ sudo nano /opt/pacsmed/scripts/backup-db.sh
 FECHA=$(date +%Y%m%d_%H%M%S)
 DESTINO=/data/pacsmed/backups
 mkdir -p $DESTINO
-mysqldump -u pacsuser -pPacsM3d_S3guro! pacs_mvp | gzip > "$DESTINO/pacs_mvp_$FECHA.sql.gz"
+# Las credenciales se leen de ~/.my.cnf (no se exponen en el proceso)
+mysqldump pacs_mvp | gzip > "$DESTINO/pacs_mvp_$FECHA.sql.gz"
 # Mantener solo los últimos 30 backups
 ls -t $DESTINO/pacs_mvp_*.sql.gz | tail -n +31 | xargs rm -f
 echo "Backup completado: pacs_mvp_$FECHA.sql.gz"
