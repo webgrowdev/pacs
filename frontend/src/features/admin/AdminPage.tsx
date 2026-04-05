@@ -1,4 +1,5 @@
 import { useState, FormEvent, useEffect, useCallback } from 'react';
+import { Link } from 'react-router-dom';
 import { AppLayout } from '../../components/AppLayout';
 import { api } from '../../lib/api';
 
@@ -159,6 +160,21 @@ export function AdminPage() {
             <span>{t.icon}</span>{t.label}
           </button>
         ))}
+        <div style={{ flex: 1 }} />
+        <Link
+          to="/admin/modules"
+          style={{
+            padding: '8px 18px',
+            fontSize: 13, fontWeight: 400,
+            color: 'var(--gray-500)',
+            borderBottom: '2px solid transparent',
+            marginBottom: -2, transition: 'all .15s',
+            display: 'flex', alignItems: 'center', gap: 6,
+            textDecoration: 'none'
+          }}
+        >
+          <span>📦</span>Módulos
+        </Link>
       </div>
 
       {activeTab === 'monitor'  && <MonitorTab />}

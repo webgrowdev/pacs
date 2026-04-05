@@ -38,13 +38,46 @@ interface DicomViewerProps {
   imageUrls: string[];
 }
 
-type ToolName = 'WindowLevel' | 'Pan' | 'Zoom' | 'Length';
+type ToolName =
+  | 'WindowLevel'
+  | 'Pan'
+  | 'Zoom'
+  | 'Length'
+  | 'Angle'
+  | 'EllipticalROI'
+  | 'RectangleROI'
+  | 'Bidirectional'
+  | 'ArrowAnnotate'
+  | 'Probe'
+  | 'Magnify';
 
-const TOOL_BUTTONS: Array<{ name: ToolName; label: string; icon: string }> = [
+const WINDOW_PRESETS = [
+  { label: 'Pulmón',     ww: 1500, wl: -600 },
+  { label: 'Mediastino', ww: 400,  wl: 40   },
+  { label: 'Hueso',      ww: 1800, wl: 400  },
+  { label: 'Cerebro',    ww: 80,   wl: 40   },
+  { label: 'Hígado',     ww: 150,  wl: 60   },
+  { label: 'Abdomen',    ww: 400,  wl: 50   },
+];
+
+const BASIC_TOOLS: Array<{ name: ToolName; label: string; icon: string }> = [
   { name: 'WindowLevel', label: 'Ventana', icon: '◑' },
   { name: 'Pan',         label: 'Mover',   icon: '✥' },
   { name: 'Zoom',        label: 'Zoom',    icon: '⊕' },
-  { name: 'Length',      label: 'Medir',   icon: '↔' }
+];
+
+const MEASURE_TOOLS: Array<{ name: ToolName; label: string; icon: string }> = [
+  { name: 'Length',       label: 'Longitud',    icon: '↔' },
+  { name: 'Angle',        label: 'Ángulo',       icon: '∠' },
+  { name: 'Bidirectional',label: 'Bidir.',       icon: '⊕' },
+  { name: 'Probe',        label: 'Sonda',        icon: '⊙' },
+];
+
+const ANNOTATION_TOOLS: Array<{ name: ToolName; label: string; icon: string }> = [
+  { name: 'EllipticalROI', label: 'ROI Elíptica', icon: '⬭' },
+  { name: 'RectangleROI',  label: 'ROI Rect.',    icon: '▭' },
+  { name: 'ArrowAnnotate', label: 'Flecha',        icon: '↗' },
+  { name: 'Magnify',       label: 'Lupa',          icon: '🔍' },
 ];
 
 const {
@@ -52,9 +85,32 @@ const {
   ZoomTool,
   WindowLevelTool,
   LengthTool,
+  AngleTool,
+  EllipticalROITool,
+  RectangleROITool,
+  BidirectionalTool,
+  ArrowAnnotateTool,
+  ProbeTool,
+  MagnifyTool,
   ToolGroupManager,
   Enums: ToolEnums
 } = csTools as any;
+
+const TOOL_CLASS_MAP: Record<ToolName, any> = {
+  WindowLevel:   WindowLevelTool,
+  Pan:           PanTool,
+  Zoom:          ZoomTool,
+  Length:        LengthTool,
+  Angle:         AngleTool,
+  EllipticalROI: EllipticalROITool,
+  RectangleROI:  RectangleROITool,
+  Bidirectional: BidirectionalTool,
+  ArrowAnnotate: ArrowAnnotateTool,
+  Probe:         ProbeTool,
+  Magnify:       MagnifyTool,
+};
+
+const ALL_TOOL_CLASSES = Object.values(TOOL_CLASS_MAP);
 
 const VIEWPORT_ID = 'dicom-vp';
 
@@ -68,47 +124,111 @@ export function DicomViewer({ imageUrls }: DicomViewerProps) {
   const [activeTool,   setActiveTool]   = useState<ToolName>('WindowLevel');
   const [ready,        setReady]        = useState(false);
   const [error,        setError]        = useState('');
+  const [currentWW,    setCurrentWW]    = useState<number | null>(null);
+  const [currentWL,    setCurrentWL]    = useState<number | null>(null);
+  const [isInverted,   setIsInverted]   = useState(false);
+  const [rotation,     setRotation]     = useState(0);
 
   // ── Activate a tool on the current group ────────────────────────────────────
   const activateTool = useCallback((toolName: ToolName) => {
     if (!toolGroupRef.current) return;
     const tg = toolGroupRef.current;
     try {
-      tg.setToolPassive(PanTool.toolName);
-      tg.setToolPassive(ZoomTool.toolName);
-      tg.setToolPassive(WindowLevelTool.toolName);
-      tg.setToolPassive(LengthTool.toolName);
-      const toolMap: Record<ToolName, string> = {
-        WindowLevel: WindowLevelTool.toolName,
-        Pan:         PanTool.toolName,
-        Zoom:        ZoomTool.toolName,
-        Length:      LengthTool.toolName
-      };
-      tg.setToolActive(toolMap[toolName], {
-        bindings: [{ mouseButton: ToolEnums.MouseBindings.Primary }]
+      // Set all tools passive first
+      ALL_TOOL_CLASSES.forEach((tc: any) => {
+        try { tg.setToolPassive(tc.toolName); } catch {}
       });
+      const toolClass = TOOL_CLASS_MAP[toolName];
+      if (toolClass) {
+        tg.setToolActive(toolClass.toolName, {
+          bindings: [{ mouseButton: ToolEnums.MouseBindings.Primary }]
+        });
+      }
       setActiveTool(toolName);
     } catch {}
   }, []);
 
+  // ── View controls ────────────────────────────────────────────────────────────
+  const getViewport = useCallback(() => {
+    if (!engineRef.current) return null;
+    try { return engineRef.current.getViewport(VIEWPORT_ID) as any; } catch { return null; }
+  }, []);
+
+  const handleFlipH = useCallback(() => {
+    const vp = getViewport();
+    if (!vp) return;
+    try { vp.flip({ flipHorizontal: true }); vp.render(); } catch {}
+  }, [getViewport]);
+
+  const handleFlipV = useCallback(() => {
+    const vp = getViewport();
+    if (!vp) return;
+    try { vp.flip({ flipVertical: true }); vp.render(); } catch {}
+  }, [getViewport]);
+
+  const handleRotate = useCallback(() => {
+    const vp = getViewport();
+    if (!vp) return;
+    const newRotation = (rotation + 90) % 360;
+    try { vp.setProperties({ rotation: newRotation }); vp.render(); setRotation(newRotation); } catch {}
+  }, [getViewport, rotation]);
+
+  const handleReset = useCallback(() => {
+    const vp = getViewport();
+    if (!vp) return;
+    try {
+      vp.resetCamera();
+      vp.resetProperties();
+      vp.render();
+      setIsInverted(false);
+      setRotation(0);
+      setCurrentWW(null);
+      setCurrentWL(null);
+    } catch {}
+  }, [getViewport]);
+
+  const handleInvert = useCallback(() => {
+    const vp = getViewport();
+    if (!vp) return;
+    const newInvert = !isInverted;
+    try { vp.setProperties({ invert: newInvert }); vp.render(); setIsInverted(newInvert); } catch {}
+  }, [getViewport, isInverted]);
+
+  const handleFullscreen = useCallback(() => {
+    const el = elementRef.current;
+    if (!el) return;
+    try {
+      if (!document.fullscreenElement) {
+        el.requestFullscreen?.();
+      } else {
+        document.exitFullscreen?.();
+      }
+    } catch {}
+  }, []);
+
+  const handlePreset = useCallback((ww: number, wl: number) => {
+    const vp = getViewport();
+    if (!vp) return;
+    try {
+      vp.setProperties({ voiRange: { lower: wl - ww / 2, upper: wl + ww / 2 } });
+      vp.render();
+      setCurrentWW(ww);
+      setCurrentWL(wl);
+    } catch {}
+  }, [getViewport]);
+
   // ── Main initialization effect ───────────────────────────────────────────────
-  // Each run of this effect gets its OWN engine + toolGroup IDs (unique per run).
-  // This prevents ID collisions when React StrictMode mounts/unmounts/mounts
-  // the component in rapid succession, and when imageUrls changes.
   useEffect(() => {
     if (!elementRef.current || !imageUrls.length) return;
 
     const element = elementRef.current;
 
-    // Unique IDs for this specific effect run — avoids registry conflicts when
-    // React StrictMode runs cleanup then immediately re-mounts.
     const engineId    = `cs-engine-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const toolGroupId = `cs-tg-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
-    // Local references captured by the closure so cleanup doesn't need the refs
     let localEngine:    cornerstone.RenderingEngine | null = null;
     let localToolGroup: any = null;
-    let cancelled = false; // set by cleanup to abort in-flight async init
+    let cancelled = false;
 
     const run = async () => {
       try {
@@ -130,7 +250,7 @@ export function DicomViewer({ imageUrls }: DicomViewerProps) {
 
         // ── Tools ────────────────────────────────────────────────────────────
         if (!csTools.addTool) return;
-        [PanTool, ZoomTool, WindowLevelTool, LengthTool].forEach((t: any) => {
+        ALL_TOOL_CLASSES.forEach((t: any) => {
           try { csTools.addTool(t); } catch {}
         });
 
@@ -138,8 +258,8 @@ export function DicomViewer({ imageUrls }: DicomViewerProps) {
         localToolGroup = toolGroup;
         toolGroupRef.current = toolGroup;
 
-        [PanTool.toolName, ZoomTool.toolName, WindowLevelTool.toolName, LengthTool.toolName].forEach((name: string) => {
-          try { toolGroup.addTool(name); } catch {}
+        ALL_TOOL_CLASSES.forEach((tc: any) => {
+          try { toolGroup.addTool(tc.toolName); } catch {}
         });
         toolGroup.addViewport(VIEWPORT_ID, engineId);
 
@@ -165,6 +285,10 @@ export function DicomViewer({ imageUrls }: DicomViewerProps) {
         vp.render();
         setTotalFrames(imageIds.length);
         setCurrentIndex(0);
+        setIsInverted(false);
+        setRotation(0);
+        setCurrentWW(null);
+        setCurrentWL(null);
         setReady(true);
       } catch (err) {
         if (cancelled) return;
@@ -176,8 +300,6 @@ export function DicomViewer({ imageUrls }: DicomViewerProps) {
     run();
 
     // ── Cleanup ──────────────────────────────────────────────────────────────
-    // Runs when: (a) imageUrls changes, (b) component unmounts,
-    // (c) React StrictMode runs the double-mount cycle in development.
     return () => {
       cancelled = true;
 
@@ -195,14 +317,35 @@ export function DicomViewer({ imageUrls }: DicomViewerProps) {
         }
       } catch {}
 
-      // Clear shared refs only if they still point to this run's objects
       if (engineRef.current === localEngine)   engineRef.current   = null;
       if (toolGroupRef.current === localToolGroup) toolGroupRef.current = null;
 
       setReady(false);
       setError('');
     };
-  }, [imageUrls]); // imageUrls must be stable (memoized in parent) to avoid churn
+  }, [imageUrls]);
+
+  // ── Mouse wheel frame navigation ─────────────────────────────────────────────
+  useEffect(() => {
+    const el = elementRef.current;
+    if (!el || !ready) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const delta = e.deltaY > 0 ? 1 : -1;
+      setCurrentIndex((prev) => {
+        const next = Math.max(0, Math.min(totalFrames - 1, prev + delta));
+        if (next !== prev && engineRef.current) {
+          try {
+            const vp = engineRef.current.getViewport(VIEWPORT_ID) as any;
+            vp.setImageIdIndex(next).then(() => vp.render());
+          } catch {}
+        }
+        return next;
+      });
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [ready, totalFrames]);
 
   // ── Frame navigation ─────────────────────────────────────────────────────────
   const navigate = useCallback(async (newIndex: number) => {
@@ -229,28 +372,86 @@ export function DicomViewer({ imageUrls }: DicomViewerProps) {
     );
   }
 
+  const toolbarBtnStyle = (active: boolean) => ({
+    padding: '4px 8px',
+    fontSize: 11,
+    display: 'flex',
+    alignItems: 'center',
+    gap: 4,
+  });
+
+  const renderToolGroup = (tools: Array<{ name: ToolName; label: string; icon: string }>) =>
+    tools.map((btn) => (
+      <button
+        key={btn.name}
+        className={`btn btn-sm ${activeTool === btn.name ? 'btn-primary' : 'btn-ghost'}`}
+        onClick={() => activateTool(btn.name)}
+        title={btn.label}
+        disabled={!ready}
+        style={toolbarBtnStyle(activeTool === btn.name)}
+      >
+        <span>{btn.icon}</span>
+        <span style={{ fontSize: 11 }}>{btn.label}</span>
+      </button>
+    ));
+
   return (
-    <div className="viewer-panel" style={{ height: '100%' }}>
-      {/* Toolbar */}
-      <div className="viewer-toolbar">
-        {TOOL_BUTTONS.map((btn) => (
-          <button
-            key={btn.name}
-            className={`btn btn-sm ${activeTool === btn.name ? 'btn-primary' : 'btn-ghost'}`}
-            onClick={() => activateTool(btn.name)}
-            title={btn.label}
-            disabled={!ready}
-          >
-            <span>{btn.icon}</span>
-            <span style={{ fontSize: 12 }}>{btn.label}</span>
-          </button>
-        ))}
+    <div className="viewer-panel" style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+      {/* Toolbar row 1 — tools */}
+      <div className="viewer-toolbar" style={{ flexWrap: 'wrap', gap: 4, padding: '6px 8px' }}>
+        {/* Basic tools */}
+        <div style={{ display: 'flex', gap: 2, alignItems: 'center' }}>
+          {renderToolGroup(BASIC_TOOLS)}
+        </div>
+        <div style={{ width: 1, height: 24, background: 'rgba(255,255,255,0.15)', margin: '0 4px' }} />
+        {/* Measurement tools */}
+        <div style={{ display: 'flex', gap: 2, alignItems: 'center' }}>
+          {renderToolGroup(MEASURE_TOOLS)}
+        </div>
+        <div style={{ width: 1, height: 24, background: 'rgba(255,255,255,0.15)', margin: '0 4px' }} />
+        {/* Annotation tools */}
+        <div style={{ display: 'flex', gap: 2, alignItems: 'center' }}>
+          {renderToolGroup(ANNOTATION_TOOLS)}
+        </div>
         <div style={{ flex: 1 }} />
-        <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.5)' }}>
-          {ready
-            ? `${imageUrls.length} imagen${imageUrls.length > 1 ? 'es' : ''}`
-            : error ? 'Error' : 'Cargando...'}
-        </span>
+        {/* View controls */}
+        <div style={{ display: 'flex', gap: 2, alignItems: 'center' }}>
+          <button className="btn btn-ghost btn-sm" onClick={handleFlipH} disabled={!ready} title="Voltear horizontal" style={toolbarBtnStyle(false)}>↔ FH</button>
+          <button className="btn btn-ghost btn-sm" onClick={handleFlipV} disabled={!ready} title="Voltear vertical" style={toolbarBtnStyle(false)}>↕ FV</button>
+          <button className="btn btn-ghost btn-sm" onClick={handleRotate} disabled={!ready} title="Rotar 90°" style={toolbarBtnStyle(false)}>↻ 90°</button>
+          <button className={`btn btn-sm btn-ghost ${isInverted ? 'btn-primary' : ''}`} onClick={handleInvert} disabled={!ready} title="Invertir" style={toolbarBtnStyle(isInverted)}>⊘ Inv</button>
+          <button className="btn btn-ghost btn-sm" onClick={handleReset} disabled={!ready} title="Reset vista" style={toolbarBtnStyle(false)}>⟳ Reset</button>
+          <button className="btn btn-ghost btn-sm" onClick={handleFullscreen} disabled={!ready} title="Pantalla completa" style={toolbarBtnStyle(false)}>⛶</button>
+        </div>
+        <div style={{ width: 1, height: 24, background: 'rgba(255,255,255,0.15)', margin: '0 4px' }} />
+        {/* Window presets */}
+        <select
+          disabled={!ready}
+          title="Presets de ventana"
+          onChange={(e) => {
+            const idx = parseInt(e.target.value, 10);
+            if (!isNaN(idx) && WINDOW_PRESETS[idx]) {
+              const { ww, wl } = WINDOW_PRESETS[idx];
+              handlePreset(ww, wl);
+            }
+            e.target.value = '';
+          }}
+          defaultValue=""
+          style={{
+            background: 'rgba(255,255,255,0.07)',
+            border: '1px solid rgba(255,255,255,0.15)',
+            color: 'rgba(255,255,255,0.85)',
+            borderRadius: 4,
+            padding: '3px 6px',
+            fontSize: 11,
+            cursor: 'pointer'
+          }}
+        >
+          <option value="" disabled>🪟 Preset…</option>
+          {WINDOW_PRESETS.map((p, i) => (
+            <option key={p.label} value={i}>{p.label} (WW:{p.ww} WL:{p.wl})</option>
+          ))}
+        </select>
       </div>
 
       {/* Canvas */}
@@ -270,8 +471,11 @@ export function DicomViewer({ imageUrls }: DicomViewerProps) {
               {ready && (
                 <>
                   <div>Frame: {currentIndex + 1}/{totalFrames}</div>
+                  {(currentWW !== null && currentWL !== null) && (
+                    <div>WW: {currentWW} / WL: {currentWL}</div>
+                  )}
                   <div style={{ marginTop: 4, fontSize: 10, opacity: 0.6 }}>
-                    Clic: {activeTool} | Clic centro: mover | Clic der: zoom
+                    Activo: {activeTool} | Centro: mover | Der: zoom | Rueda: navegar frames
                   </div>
                 </>
               )}
