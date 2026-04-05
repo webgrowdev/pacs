@@ -1,9 +1,104 @@
 import { Router } from 'express';
 import { prisma } from '../../config/prisma.js';
 import { requireAuth, requireRole, AuthRequest } from '../../middleware/auth.js';
+import { env } from '../../config/env.js';
 
 export const auditRouter = Router();
 auditRouter.use(requireAuth as any, requireRole('ADMIN') as any);
+
+// ─── GET /api/audit/devices ───────────────────────────────────────────────────
+// Returns all equipment (AE titles) that have connected via DICOM SCP,
+// grouped by AE title with stats.  Used by the Admin monitoring panel.
+auditRouter.get('/devices', async (_req: AuthRequest, res: any) => {
+  try {
+    const since72h = new Date(Date.now() - 72 * 60 * 60 * 1000);
+    const since5min = new Date(Date.now() - 5 * 60 * 1000);
+    const since1h   = new Date(Date.now() - 60 * 60 * 1000);
+
+    // Fetch all SCP received logs in the last 72 h + all errors
+    const [received, errors] = await Promise.all([
+      prisma.auditLog.findMany({
+        where: { action: 'DICOM_SCP_RECEIVED', createdAt: { gte: since72h } },
+        orderBy: { createdAt: 'desc' },
+        select: { createdAt: true, payload: true, ipAddress: true }
+      }),
+      prisma.auditLog.findMany({
+        where: { action: 'DICOM_SCP_ERROR', createdAt: { gte: since72h } },
+        select: { createdAt: true, payload: true }
+      })
+    ]);
+
+    // Group by AE title
+    const deviceMap = new Map<string, {
+      aeTitle: string;
+      lastSeen: Date;
+      firstSeen: Date;
+      studies: Set<string>;
+      imagesCount: number;
+      ipAddress: string;
+      errorCount: number;
+    }>();
+
+    for (const log of received) {
+      const payload = (log.payload ?? {}) as Record<string, any>;
+      const ae = (payload.callingAeTitle ?? log.ipAddress ?? 'UNKNOWN') as string;
+      const studyId = (payload.studyId ?? '') as string;
+
+      if (!deviceMap.has(ae)) {
+        deviceMap.set(ae, {
+          aeTitle: ae,
+          lastSeen:   log.createdAt,
+          firstSeen:  log.createdAt,
+          studies:    new Set(),
+          imagesCount: 0,
+          ipAddress:  log.ipAddress ?? '—',
+          errorCount: 0
+        });
+      }
+      const d = deviceMap.get(ae)!;
+      if (log.createdAt > d.lastSeen)  d.lastSeen  = log.createdAt;
+      if (log.createdAt < d.firstSeen) d.firstSeen = log.createdAt;
+      if (studyId) d.studies.add(studyId);
+      d.imagesCount++;
+      if (log.ipAddress && log.ipAddress !== '—') d.ipAddress = log.ipAddress;
+    }
+
+    for (const log of errors) {
+      const payload = (log.payload ?? {}) as Record<string, any>;
+      const ae = (payload.callingAeTitle ?? 'UNKNOWN') as string;
+      if (deviceMap.has(ae)) {
+        deviceMap.get(ae)!.errorCount++;
+      }
+    }
+
+    const devices = Array.from(deviceMap.values()).map((d) => ({
+      aeTitle:      d.aeTitle,
+      ipAddress:    d.ipAddress,
+      lastSeen:     d.lastSeen.toISOString(),
+      firstSeen:    d.firstSeen.toISOString(),
+      studiesCount: d.studies.size,
+      imagesCount:  d.imagesCount,
+      errorCount:   d.errorCount,
+      // online = active in last 5 min, recent = last 1h, idle = last 72h
+      status: d.lastSeen >= since5min ? 'online'
+            : d.lastSeen >= since1h   ? 'recent'
+            : 'idle'
+    }));
+
+    // Also include server info so the frontend can show connection instructions
+    return res.json({
+      devices,
+      serverConfig: {
+        aeTitle: env.DICOM_AE_TITLE,
+        scpPort: env.DICOM_SCP_PORT,
+        appBaseUrl: env.APP_BASE_URL,
+      }
+    });
+  } catch (err) {
+    console.error('[AUDIT/DEVICES]', err);
+    return res.status(500).json({ message: 'Error al obtener dispositivos' });
+  }
+});
 
 auditRouter.get('/export', async (req: AuthRequest, res: any) => {
   try {

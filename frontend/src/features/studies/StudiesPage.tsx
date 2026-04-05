@@ -147,7 +147,11 @@ export function StudiesPage() {
                     )}
                   </td>
                   <td>
-                    <Link to={`/studies/${s.id}`} className="btn btn-ghost btn-sm">Abrir visor</Link>
+                    {s.reports[0]?.status === 'FINAL' || s.reports[0]?.status === 'SIGNED' ? (
+                      <Link to={`/studies/${s.id}`} className="btn btn-ghost btn-sm">Ver informe</Link>
+                    ) : (
+                      <Link to={`/studies/${s.id}`} className="btn btn-primary btn-sm">Informar</Link>
+                    )}
                   </td>
                 </tr>
               ))
@@ -205,16 +209,18 @@ export function StudiesPage() {
                     <input value={form.description} onChange={(e) => setForm(f => ({ ...f, description: e.target.value }))} placeholder="Ej: RM de rodilla derecha, RX de tórax AP..." />
                   </div>
                   <div className="form-group">
-                    <label>Archivos DICOM o ZIP *</label>
+                    <label>Archivos DICOM, ZIP o TAR *</label>
                     <input
                       ref={fileRef}
                       type="file"
                       multiple
-                      accept=".dcm,.dicom,.zip,application/dicom"
+                      accept=".dcm,.dicom,.zip,.tar,.tar.gz,.tgz,.tar.bz2,.tbz,.tbz2,application/dicom,application/x-bzip2,application/x-tar,application/gzip"
                       onChange={(e) => setFiles(e.target.files)}
                       required
                     />
-                    <span className="text-xs text-muted">Se aceptan archivos .dcm individuales o .zip con varios archivos DICOM</span>
+                    <span className="text-xs text-muted">
+                      Se aceptan: archivos <strong>.dcm</strong> individuales · <strong>.zip</strong> · <strong>.tar.bz2</strong> · <strong>.tar.gz</strong> · <strong>.tgz</strong> con varios archivos DICOM
+                    </span>
                   </div>
                   {uploadError && <div className="alert alert-error"><span>✕</span><span>{uploadError}</span></div>}
                   {uploadSuccess && <div className="alert alert-success"><span>✓</span><span>{uploadSuccess}</span></div>}

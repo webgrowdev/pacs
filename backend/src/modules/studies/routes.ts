@@ -2,6 +2,8 @@ import { Router } from 'express';
 import multer from 'multer';
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import AdmZip from 'adm-zip';
 import dicomParser from 'dicom-parser';
 import { z } from 'zod';
@@ -12,6 +14,8 @@ import { studyStoragePath } from '../../storage/file-storage.js';
 import { logAudit } from '../../middleware/audit.js';
 import { createNotification } from '../notifications/service.js';
 import { sendStudyAssignedEmail } from '../../utils/email.js';
+
+const execFileAsync = promisify(execFile);
 
 const upload = multer({
   dest: path.resolve(process.cwd(), 'storage/tmp'),
@@ -184,7 +188,7 @@ studiesRouter.post('/upload', requireRole('ADMIN', 'DOCTOR') as any, upload.arra
   if (!parsedBody.success) return res.status(400).json({ message: 'Payload inválido', errors: parsedBody.error.flatten() });
 
   const files = (req.files as Express.Multer.File[]) || [];
-  if (!files.length) return res.status(400).json({ message: 'Debe subir al menos un archivo DICOM o ZIP' });
+  if (!files.length) return res.status(400).json({ message: 'Debe subir al menos un archivo DICOM, ZIP o TAR' });
 
   const { patientId, modality, studyDate, description, assignedDoctorId } = parsedBody.data;
 
@@ -224,7 +228,10 @@ studiesRouter.post('/upload', requireRole('ADMIN', 'DOCTOR') as any, upload.arra
 
   for (const file of files) {
     try {
-      if (file.originalname.toLowerCase().endsWith('.zip')) {
+      const lowerName = file.originalname.toLowerCase();
+
+      if (lowerName.endsWith('.zip')) {
+        // ── ZIP ──────────────────────────────────────────────────────────────
         const zip = new AdmZip(file.path);
         for (const entry of zip.getEntries()) {
           if (entry.isDirectory) continue;
@@ -236,7 +243,43 @@ studiesRouter.post('/upload', requireRole('ADMIN', 'DOCTOR') as any, upload.arra
           await persistDicom(study.id, out, name, entryData.length, parsed);
           persistedFiles += 1;
         }
+
+      } else if (
+        lowerName.endsWith('.tar.bz2') || lowerName.endsWith('.tbz2') ||
+        lowerName.endsWith('.tbz')     || lowerName.endsWith('.tar.gz') ||
+        lowerName.endsWith('.tgz')     || lowerName.endsWith('.tar')
+      ) {
+        // ── TAR (bz2 / gz / plain) — uses system tar for bzip2 support ──────
+        const extractDir = path.join(
+          path.resolve(process.cwd(), 'storage/tmp'),
+          `tar_${Date.now()}_${Math.random().toString(36).slice(2)}`
+        );
+        fs.mkdirSync(extractDir, { recursive: true });
+        try {
+          // -xf auto-detects gzip and bzip2 on modern tar (macOS & GNU)
+          await execFileAsync('tar', ['-xf', file.path, '-C', extractDir], {
+            timeout: 120_000 // 2 min max, prevents tar bombs hanging the server
+          });
+          const dcmFiles = walkDicomFiles(extractDir);
+          if (dcmFiles.length === 0) {
+            console.warn('[STUDIES/UPLOAD tar] No se encontraron archivos DICOM en', file.originalname);
+          }
+          for (const dcmPath of dcmFiles) {
+            const data = fs.readFileSync(dcmPath);
+            const parsed = safeParseDicom(data);
+            // Flatten name: use only the basename to avoid path traversal
+            const name = path.basename(dcmPath);
+            const out = path.join(storageFolder, name);
+            fs.copyFileSync(dcmPath, out);
+            await persistDicom(study.id, out, name, data.length, parsed);
+            persistedFiles += 1;
+          }
+        } finally {
+          fs.rmSync(extractDir, { recursive: true, force: true });
+        }
+
       } else {
+        // ── Single DICOM file ──────────────────────────────────────────────
         const data = fs.readFileSync(file.path);
         const parsed = safeParseDicom(data);
         const out = path.join(storageFolder, file.originalname);
@@ -263,6 +306,27 @@ studiesRouter.post('/upload', requireRole('ADMIN', 'DOCTOR') as any, upload.arra
     errors: errors.length ? errors : undefined
   });
 });
+
+/**
+ * Recursively collect all DICOM files (.dcm / .dicom) inside a directory.
+ * Used after extracting a tar archive.
+ */
+function walkDicomFiles(dir: string): string[] {
+  const results: string[] = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      results.push(...walkDicomFiles(full));
+    } else {
+      const lower = entry.name.toLowerCase();
+      // Accept .dcm, .dicom, or files with no extension (common in DICOM exports)
+      if (lower.endsWith('.dcm') || lower.endsWith('.dicom') || !lower.includes('.')) {
+        results.push(full);
+      }
+    }
+  }
+  return results;
+}
 
 function cleanupTmpFiles(files: Express.Multer.File[]) {
   for (const f of files) {

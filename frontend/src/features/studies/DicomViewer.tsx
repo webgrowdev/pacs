@@ -1,40 +1,40 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import * as cornerstone from '@cornerstonejs/core';
 import * as csTools from '@cornerstonejs/tools';
+// Static import — dynamic import() fails for this package in browser ESM
+// because it mixes named + default exports (SyntaxError: star export resolution).
+// The 'init' named export registers 'wadouri' / 'wadors' / 'dicomfile' loaders
+// with @cornerstonejs/core via registerImageLoader() internally.
+import { init as dicomLoaderInit } from '@cornerstonejs/dicom-image-loader';
 import { getAccessToken } from '../../lib/auth';
 
-// Inicialización global (solo una vez por sesión)
+// Initialization guards (one-time per app session)
 let cornerstoneInitialized = false;
 let dicomLoaderInitialized = false;
 
-async function initializeCornerstoneDicomLoader() {
+function initializeDicomLoader() {
   if (dicomLoaderInitialized) return;
   dicomLoaderInitialized = true;
 
-  try {
-    // Dynamic import para el dicom-image-loader (usa web workers)
-    const dicomImageLoader = await import('@cornerstonejs/dicom-image-loader');
-
-    dicomImageLoader.init({ maxWebWorkers: 1 });
-
-    // Configurar autenticación para cargar archivos protegidos
-    dicomImageLoader.configure({
-      beforeSend: (xhr: XMLHttpRequest) => {
-        const token = getAccessToken();
-        if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
-      }
-    });
-  } catch (err) {
-    console.warn('[DicomViewer] dicom-image-loader no disponible, usando modo demo:', err);
-    dicomLoaderInitialized = false;
-  }
+  // In @cornerstonejs/dicom-image-loader v3+, options (incl. beforeSend) are
+  // passed directly to init(). There is no separate .configure() method.
+  // init() calls setOptions() then registerLoaders() which registers the
+  // 'wadouri', 'wadors' and 'dicomfile' schemes with Cornerstone Core.
+  dicomLoaderInit({
+    maxWebWorkers: 1,
+    // Inject Bearer token on every XHR request for protected /files endpoints
+    beforeSend: (xhr: XMLHttpRequest) => {
+      const token = getAccessToken();
+      if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+    }
+  } as any);
 }
 
 async function initializeCornerstone() {
   if (cornerstoneInitialized) return;
   cornerstoneInitialized = true;
   await cornerstone.init();
-  await initializeCornerstoneDicomLoader();
+  initializeDicomLoader(); // must run after cornerstone.init(), before any imageId load
   await csTools.init();
 }
 
@@ -184,7 +184,7 @@ export function DicomViewer({ imageUrls }: DicomViewerProps) {
 
   if (!imageUrls.length) {
     return (
-      <div className="viewer-panel" style={{ minHeight: 400 }}>
+      <div className="viewer-panel" style={{ height: '100%', minHeight: 400 }}>
         <div className="empty-state" style={{ margin: 'auto' }}>
           <div className="empty-icon">⊞</div>
           <div className="empty-title" style={{ color: 'rgba(255,255,255,0.5)' }}>Sin imágenes DICOM</div>
@@ -195,7 +195,7 @@ export function DicomViewer({ imageUrls }: DicomViewerProps) {
   }
 
   return (
-    <div className="viewer-panel">
+    <div className="viewer-panel" style={{ height: '100%' }}>
       {/* Toolbar */}
       <div className="viewer-toolbar">
         {TOOL_BUTTONS.map((btn) => (

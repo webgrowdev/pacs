@@ -170,9 +170,15 @@ export function WorklistPage() {
                     }
                   </td>
                   <td>
-                    <Link to={`/studies/${s.id}`} className="btn btn-primary btn-sm">
-                      Informar
-                    </Link>
+                    {s.reports[0]?.status === 'FINAL' || s.reports[0]?.status === 'SIGNED' ? (
+                      <Link to={`/studies/${s.id}`} className="btn btn-ghost btn-sm">
+                        Ver informe
+                      </Link>
+                    ) : (
+                      <Link to={`/studies/${s.id}`} className="btn btn-primary btn-sm">
+                        Informar
+                      </Link>
+                    )}
                   </td>
                 </tr>
               ))
