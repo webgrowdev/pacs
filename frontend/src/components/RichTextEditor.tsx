@@ -1,4 +1,5 @@
 import { useRef, useEffect, useCallback } from 'react';
+import DOMPurify from 'dompurify';
 
 interface RichTextEditorProps {
   value: string;
@@ -16,7 +17,8 @@ export function RichTextEditor({ value, onChange, placeholder, minHeight = 110, 
   // Initialize / sync content when value changes externally (not while focused)
   useEffect(() => {
     if (ref.current && !isFocused.current && ref.current.innerHTML !== value) {
-      ref.current.innerHTML = value;
+      // Sanitize before assigning to innerHTML to prevent stored XSS
+      ref.current.innerHTML = DOMPurify.sanitize(value, { USE_PROFILES: { html: true } });
     }
   }, [value]);
 

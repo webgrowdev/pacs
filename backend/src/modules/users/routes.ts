@@ -88,6 +88,10 @@ usersRouter.post('/', async (req: AuthRequest, res: any) => {
 
 // Activar/desactivar usuario
 usersRouter.patch('/:id/toggle-active', async (req: AuthRequest, res: any) => {
+  // Guard: prevent admin from deactivating their own account (self-lockout)
+  if (String(req.params.id) === req.user!.sub) {
+    return res.status(400).json({ message: 'No puede desactivar su propia cuenta de administrador' });
+  }
   try {
     const user = await prisma.user.findUnique({ where: { id: String(req.params.id) } });
     if (!user) return res.status(404).json({ message: 'Usuario no encontrado' });
