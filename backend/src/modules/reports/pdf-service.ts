@@ -280,17 +280,24 @@ function estimateTextHeight(text: string): number {
 /** Strip HTML tags from rich-text content before inserting into PDF */
 export function stripHtml(html: string): string {
   return html
+    // Remove script and style blocks entirely (content + tags)
+    .replace(/<script\b[^]*?<\/script>/gi, '')
+    .replace(/<style\b[^]*?<\/style>/gi, '')
+    // Normalize block-level elements to newlines before stripping tags
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/p>/gi, '\n')
     .replace(/<\/li>/gi, '\n')
     .replace(/<\/div>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&amp;/g, '&')
+    // Strip remaining tags
+    .replace(/<[^>]*>/g, '')
+    // Decode HTML entities (order: named before &amp; to avoid double decode)
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
-    .replace(/&nbsp;/g, ' ')
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    // Collapse excessive blank lines
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
