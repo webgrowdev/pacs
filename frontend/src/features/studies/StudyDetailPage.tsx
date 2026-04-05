@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { AppLayout } from '../../components/AppLayout';
@@ -212,12 +212,24 @@ export function StudyDetailPage() {
 
   const removeMeasurement = (i: number) => setMeasurements((prev) => prev.filter((_, idx) => idx !== i));
 
-  const filesBase   = getFilesBaseUrl();
-  // Filter out DICOMDIR — it's a directory index file with no pixel data;
-  // passing it to Cornerstone causes "The pixel data is missing" errors.
-  const dicomUrls   = study?.dicomFiles
-    .filter((f) => f.fileName.toUpperCase() !== 'DICOMDIR')
-    .map((f) => `${filesBase}/dicom/${study.id}/${f.fileName}`) ?? [];
+  const filesBase = getFilesBaseUrl();
+
+  // IMPORTANT: useMemo so the array reference is STABLE between re-renders.
+  // DicomViewer's useEffect depends on [imageUrls].  Without memoization,
+  // every state update in this page (typing in a textarea, saving, etc.)
+  // causes a new array to be created, which triggers a new effect run in
+  // DicomViewer — destroying and re-creating the WebGL context repeatedly,
+  // causing "too many WebGL contexts" and stuck-loading symptoms.
+  const dicomUrls = useMemo(
+    () =>
+      study?.dicomFiles
+        // Filter DICOMDIR — it's a directory index with no pixel data
+        .filter((f) => f.fileName.toUpperCase() !== 'DICOMDIR')
+        .map((f) => `${filesBase}/dicom/${study.id}/${f.fileName}`) ?? [],
+    // Only recompute when the study's file list actually changes
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [study?.id, study?.dicomFiles?.length]
+  );
 
   // ────────────────────────────────────────────────────────────────────────────
   if (loading) {

@@ -2,103 +2,107 @@ import { defineConfig, Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'node:path';
 import fs from 'node:fs';
-import { build as esbuildBuild } from 'esbuild';
+import { buildSync } from 'esbuild';
 
-// The worker will be bundled (comlink + all relative deps inlined) and served
-// from this public path so the browser can load it as a module worker.
-const WORKER_PUBLIC_PATH = '/_cs/decodeImageFrameWorker.js';
+// ─── Worker public path ───────────────────────────────────────────────────────
+const WORKER_PUBLIC = '/_cs/decodeImageFrameWorker.js';
 
-/**
- * WHY THIS PLUGIN EXISTS
- * ──────────────────────────────────────────────────────────────────────────
- *
- * PROBLEM 1 — Safari / strict-Chrome ESM `export *` SyntaxError:
- *   @cornerstonejs/core/dist/esm/index.js has:
- *     export * from './RenderingEngine/helpers/getOrCreateCanvas'
- *   that file has `export default getOrCreateCanvas`.
- *   Per the ESM spec `export *` must not re-export `default`.
- *   Safari throws SyntaxError when it encounters this in raw browser ESM.
- *
- *   FIX: put all three Cornerstone packages in `optimizeDeps.include`.
- *   esbuild pre-bundles them into flat files — the browser never sees
- *   any raw `export *` pattern.
- *
- * PROBLEM 2 — Worker URL breaks after pre-bundling:
- *   @cornerstonejs/dicom-image-loader/dist/esm/init.js creates the worker:
- *     new Worker(new URL('./decodeImageFrameWorker.js', import.meta.url), …)
- *   When esbuild pre-bundles the package, import.meta.url becomes the URL
- *   of the bundled deps file, not the original dist/esm/ directory.
- *   The relative worker URL therefore resolves to nothing.
- *
- *   FIX (dev): `optimizeDeps.esbuildOptions.plugins` patches init.js
- *   DURING the pre-bundling pass so the worker uses the public path.
- *
- *   FIX (prod): the `transform` hook patches init.js when Rollup sees it.
- *
- * PROBLEM 3 — comlink bare specifier inside the worker:
- *   decodeImageFrameWorker.js imports `comlink` (bare specifier) plus many
- *   `./shared/…` relative imports.  A raw copy served from /public would
- *   fail because the browser can't resolve bare specifiers as native ESM.
- *
- *   FIX: `buildStart` uses esbuild to BUNDLE the worker (comlink + all
- *   relative deps inlined) into a self-contained ES-module file that the
- *   browser can load as `new Worker(url, { type: 'module' })` without
- *   needing any module resolution.
- */
+// =============================================================================
+// Pre-bundle the decode worker SYNCHRONOUSLY at vite.config.ts load time.
+//
+// WHY SYNC: this must complete before optimizeDeps, buildStart, or any browser
+// request.  esbuild's buildSync() is a blocking call — safe here because
+// vite.config.ts runs in Node, not in the browser.
+//
+// WHAT IT DOES:
+//   decodeImageFrameWorker.js imports bare specifier 'comlink' plus many
+//   relative './shared/...' modules.  A raw copy to /public would break in
+//   any browser because bare specifiers are not resolvable in native ESM
+//   module workers.  esbuild bundles everything into a single self-contained
+//   ES-module that the browser CAN load as new Worker(url, {type:'module'}).
+// =============================================================================
+;(function prebundleWorker() {
+  const src  = path.resolve('node_modules/@cornerstonejs/dicom-image-loader/dist/esm/decodeImageFrameWorker.js');
+  const dest = path.resolve(`public${WORKER_PUBLIC}`);
+  if (!fs.existsSync(src)) return;
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  try {
+    buildSync({
+      entryPoints: [src],
+      bundle:      true,
+      format:      'esm',
+      platform:    'browser',
+      outfile:     dest,
+      logLevel:    'silent',
+      // The Cornerstone codec WASM wrappers (openjpeg, charls, libjpeg, openjph)
+      // are Emscripten-generated and contain dead-code paths for Node.js that
+      // reference 'fs' and 'path' behind an ENVIRONMENT_IS_NODE guard.
+      // Marking them as external is safe: they are never called in the browser.
+      external: ['fs', 'path', 'crypto'],
+      define: {
+        // Help esbuild tree-shake the Node.js branches
+        'process.versions.node': 'undefined',
+      },
+    });
+  } catch {
+    // Fallback: raw copy (worker will still fail in browser, but at least
+    // the dev server starts)
+    try { fs.copyFileSync(src, dest); } catch {}
+  }
+})();
+
+// =============================================================================
+// Vite plugin — two transforms:
+//
+// 1. Patch @cornerstonejs/dicom-image-loader/dist/esm/init.js
+//    The `workerFn` inside creates the worker with a relative URL:
+//      new Worker(new URL('./decodeImageFrameWorker.js', import.meta.url), …)
+//    When dicom-image-loader is excluded from optimizeDeps (served raw), Vite
+//    resolves import.meta.url to the /@fs/ URL of init.js.  The resulting
+//    worker URL is /@fs/…/decodeImageFrameWorker.js.  Native module workers
+//    loaded from /@fs/ don't go through Vite's transform pipeline, so bare
+//    specifiers like 'comlink' fail.
+//    FIX: replace the whole Worker constructor with our pre-bundled path.
+//
+// 2. Patch @cornerstonejs/core/dist/esm/index.js star-export
+//    export * from './RenderingEngine/helpers/getOrCreateCanvas'
+//    that file has export default → Safari / strict Chrome throw SyntaxError.
+//    FIX: replace with explicit named re-export (no `default` leaks out).
+// =============================================================================
 function cornerstonePlugin(): Plugin {
-  // esbuild filter — matches dist/esm/init.js inside dicom-image-loader
-  const initFilter = /dicom-image-loader[/\\]dist[/\\]esm[/\\]init\.js$/;
-
-  // Regex that matches the Worker constructor in init.js
-  const workerUrlRe =
-    /new Worker\(\s*new URL\(\s*['"][^'"]*decodeImageFrameWorker[^'"]*['"]\s*,\s*import\.meta\.url\s*\)\s*,\s*\{\s*type\s*:\s*['"]module['"]\s*\}\s*\)/g;
-  const workerReplacement = `new Worker('${WORKER_PUBLIC_PATH}', { type: 'module' })`;
+  const WORKER_RE = /new Worker\(\s*new URL\(\s*['"][^'"]*decodeImageFrameWorker[^'"]*['"]\s*,\s*import\.meta\.url\s*\)\s*,\s*\{\s*type\s*:\s*['"]module['"]\s*\}\s*\)/g;
 
   return {
-    name: 'cornerstone-dicom',
+    name:    'cornerstone-patch',
     enforce: 'pre',
 
-    // ── Runs at dev-server start and at the start of every prod build ──────
-    async buildStart() {
-      const workerSrc = path.resolve(
-        'node_modules/@cornerstonejs/dicom-image-loader/dist/esm/decodeImageFrameWorker.js'
-      );
-      const destDir = path.resolve(`public${path.dirname(WORKER_PUBLIC_PATH)}`);
-      const destFile = path.resolve(`public${WORKER_PUBLIC_PATH}`);
-
-      fs.mkdirSync(destDir, { recursive: true });
-
-      if (!fs.existsSync(workerSrc)) {
-        console.warn('[cs-plugin] decodeImageFrameWorker.js not found at', workerSrc);
-        return;
-      }
-
-      try {
-        // Bundle the worker with all its dependencies (comlink, ./shared/…)
-        // into a single self-contained ES module so the browser can load it
-        // as `new Worker(url, { type: 'module' })` without any bare specifiers.
-        await esbuildBuild({
-          entryPoints: [workerSrc],
-          bundle: true,
-          format: 'esm',
-          platform: 'browser',
-          outfile: destFile,
-          logLevel: 'warning',
-        });
-        console.log('[cs-plugin] ✓ Decode worker bundled →', WORKER_PUBLIC_PATH);
-      } catch (e) {
-        console.warn('[cs-plugin] Worker bundle failed, falling back to raw copy:', e);
-        try { fs.copyFileSync(workerSrc, destFile); } catch {}
-      }
-    },
-
-    // ── Prod build: Rollup transform (optimizeDeps esbuild plugin below    ──
-    // ── handles dev mode)                                                  ──
     transform(code, id) {
-      if (initFilter.test(id) && code.includes('decodeImageFrameWorker')) {
-        const patched = code.replace(workerUrlRe, workerReplacement);
+      // ── 1. init.js worker URL ──────────────────────────────────────────────
+      if (
+        id.includes('@cornerstonejs') &&
+        id.includes('dicom-image-loader') &&
+        code.includes('decodeImageFrameWorker')
+      ) {
+        const patched = code.replace(
+          WORKER_RE,
+          `new Worker('${WORKER_PUBLIC}', { type: 'module' })`
+        );
         if (patched !== code) return { code: patched, map: null };
       }
+
+      // ── 2. core star-export (Safari ESM bug) ──────────────────────────────
+      if (
+        id.includes('@cornerstonejs/core') &&
+        id.endsWith('index.js') &&
+        code.includes("export * from './RenderingEngine/helpers/getOrCreateCanvas'")
+      ) {
+        const patched = code.replace(
+          "export * from './RenderingEngine/helpers/getOrCreateCanvas';",
+          "export { EPSILON, createCanvas, createViewportElement, setCanvasCreator, getOrCreateCanvas } from './RenderingEngine/helpers/getOrCreateCanvas';"
+        );
+        if (patched !== code) return { code: patched, map: null };
+      }
+
       return null;
     },
   };
@@ -118,34 +122,19 @@ export default defineConfig({
   worker: { format: 'es' },
 
   optimizeDeps: {
-    // Pre-bundle ALL THREE packages with esbuild so the browser never sees
-    // the raw ESM files that trigger the `export * from module-with-default`
-    // SyntaxError in Safari / strict-mode Chromium.
+    // Pre-bundle core + tools with esbuild so the browser never sees the raw
+    // ESM files that trigger the 'export * from module-with-default' SyntaxError
+    // in Safari / strict Chrome.
+    //
+    // dicom-image-loader is EXCLUDED so Vite serves its individual files through
+    // its own transform pipeline.  Our cornerstonePlugin transform hook above
+    // patches init.js before the browser sees it, replacing the worker URL.
     include: [
       '@cornerstonejs/core',
       '@cornerstonejs/tools',
+    ],
+    exclude: [
       '@cornerstonejs/dicom-image-loader',
     ],
-
-    esbuildOptions: {
-      // ── Dev mode: patch init.js DURING the esbuild pre-bundling pass ──
-      plugins: [
-        {
-          name: 'cs-worker-url-patch',
-          setup(build: any) {
-            build.onLoad({ filter: /dicom-image-loader[/\\]dist[/\\]esm[/\\]init\.js$/ },
-              (args: any) => {
-                const raw = fs.readFileSync(args.path, 'utf-8');
-                const patched = raw.replace(
-                  /new Worker\(\s*new URL\(\s*['"][^'"]*decodeImageFrameWorker[^'"]*['"]\s*,\s*import\.meta\.url\s*\)\s*,\s*\{\s*type\s*:\s*['"]module['"]\s*\}\s*\)/g,
-                  `new Worker('${WORKER_PUBLIC_PATH}', { type: 'module' })`
-                );
-                return { contents: patched, loader: 'js' };
-              }
-            );
-          },
-        },
-      ],
-    },
   },
 });
