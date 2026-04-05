@@ -127,7 +127,10 @@ auditRouter.get('/export', async (req: AuthRequest, res: any) => {
     // CSV
     function escapeCell(val: any): string {
       const str = String(val ?? '');
-      // Formula injection guard: neutralize leading = + - @ (Excel/LibreOffice formulas)
+      // Formula injection guard: prepend a single quote to cells starting with
+      // = + - @ to prevent Excel/LibreOffice from interpreting the content as a
+      // formula when the CSV is opened. The quote is visible in formula bar but
+      // harmless in the cell display for normal content.
       const sanitized = /^[=+\-@]/.test(str) ? `'${str}` : str;
       if (sanitized.includes(',') || sanitized.includes('"') || sanitized.includes('\n')) {
         return `"${sanitized.replace(/"/g, '""')}"`;

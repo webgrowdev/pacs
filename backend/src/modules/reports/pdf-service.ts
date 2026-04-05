@@ -277,18 +277,25 @@ function estimateTextHeight(text: string): number {
   return Math.ceil(text.length / 90) * 13;
 }
 
-/** Strip HTML tags from rich-text content before inserting into PDF */
+/** Strip HTML tags from rich-text content before inserting into PDF.
+ *
+ * Security note: this function produces plain text for PDFKit — it is NOT
+ * an HTML sanitizer for rendering. The output is never interpreted as HTML.
+ * The stripping is defensive-in-depth: the primary XSS defense for stored
+ * content is DOMPurify in the RichTextEditor on the client side.
+ */
 export function stripHtml(html: string): string {
   return html
-    // Remove script and style blocks entirely (content + tags)
-    .replace(/<script\b[^]*?<\/script>/gi, '')
-    .replace(/<style\b[^]*?<\/style>/gi, '')
+    // Remove script blocks: match opening tag + any content + closing tag.
+    // Use a permissive closing-tag pattern to handle `</script >` variants.
+    .replace(/<script\b[\s\S]*?<\/script\s*>/gi, '')
+    .replace(/<style\b[\s\S]*?<\/style\s*>/gi, '')
     // Normalize block-level elements to newlines before stripping tags
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/p>/gi, '\n')
     .replace(/<\/li>/gi, '\n')
     .replace(/<\/div>/gi, '\n')
-    // Strip remaining tags
+    // Strip all remaining HTML tags (angle-bracket content)
     .replace(/<[^>]*>/g, '')
     // Decode HTML entities (order: named before &amp; to avoid double decode)
     .replace(/&lt;/g, '<')

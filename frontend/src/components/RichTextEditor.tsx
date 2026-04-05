@@ -17,7 +17,9 @@ export function RichTextEditor({ value, onChange, placeholder, minHeight = 110, 
   // Initialize / sync content when value changes externally (not while focused)
   useEffect(() => {
     if (ref.current && !isFocused.current && ref.current.innerHTML !== value) {
-      // Sanitize before assigning to innerHTML to prevent stored XSS
+      // Sanitize before assigning to innerHTML to prevent stored XSS.
+      // USE_PROFILES: { html: true } allows safe formatting tags (b, i, u, ul, ol, li, p,
+      // br, div, strong, em) while stripping scripts, event handlers, and dangerous attrs.
       ref.current.innerHTML = DOMPurify.sanitize(value, { USE_PROFILES: { html: true } });
     }
   }, [value]);

@@ -246,7 +246,10 @@ studiesRouter.post('/upload', requireRole('ADMIN', 'DOCTOR') as any, upload.arra
           // that contain '../', absolute paths, or Windows backslashes.
           const name = path.basename(entry.entryName);
           if (!name) continue; // skip entries with no usable filename
-          // ZIP bomb guard: check uncompressed size before decompressing
+          // ZIP bomb guard: check uncompressed size before decompressing.
+          // adm-zip 0.5.x exposes `header.size` as the uncompressed byte count.
+          // Using `as any` because the TypeScript types ship without this property
+          // declared, but it is a stable part of the adm-zip implementation.
           if ((entry.header as any).size > MAX_ENTRY_BYTES) {
             console.warn(`[STUDIES/UPLOAD zip] Entrada "${entry.entryName}" excede ${MAX_ENTRY_BYTES} bytes descomprimidos, ignorada`);
             continue;
