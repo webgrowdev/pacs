@@ -6,6 +6,7 @@ import { api, getFilesBaseUrl } from '../../lib/api';
 import { getAccessToken } from '../../lib/auth';
 import { DicomViewer } from './DicomViewer';
 import { useAuth } from '../../lib/auth';
+import { RichTextEditor } from '../../components/RichTextEditor';
 
 interface Measurement {
   id?: string;
@@ -27,15 +28,26 @@ interface Report {
   doctor: { firstName: string; lastName: string };
 }
 
+interface ReportTemplate {
+  id: string;
+  name: string;
+  modality?: string | null;
+  findingsTemplate: string;
+  conclusionTemplate: string;
+}
+
 interface Study {
   id: string;
   modality: string;
   studyDate: string;
   description?: string;
   status: string;
+  requestingDoctorName?: string;
+  insuranceOrderNumber?: string;
   patient: {
     firstName: string; lastName: string; internalCode: string;
-    documentId: string; dateOfBirth: string; sex: string;
+    documentId: string; cuil?: string; dateOfBirth: string; sex: string;
+    healthInsurance?: string; healthInsurancePlan?: string; healthInsuranceMemberId?: string;
   };
   dicomFiles: Array<{ id: string; fileName: string; filePath: string }>;
   reports: Report[];
@@ -71,6 +83,10 @@ export function StudyDetailPage() {
   const [showAiPanel,         setShowAiPanel]         = useState(false);
   const [showStudyInfo,       setShowStudyInfo]       = useState(false);
 
+  // Template state
+  const [templates,        setTemplates]        = useState<ReportTemplate[]>([]);
+  const [showTemplates,    setShowTemplates]    = useState(false);
+
   const loadStudy = useCallback(async () => {
     try {
       const { data } = await api.get(`/studies/${id}`);
@@ -91,6 +107,23 @@ export function StudyDetailPage() {
   }, [id]);
 
   useEffect(() => { loadStudy(); }, [loadStudy]);
+
+  // Load report templates filtered by current modality
+  useEffect(() => {
+    if (!study) return;
+    api.get('/report-templates', { params: { modality: study.modality } })
+      .then((r) => setTemplates(Array.isArray(r.data) ? r.data : []))
+      .catch(() => {});
+  }, [study]);
+
+  const applyTemplate = (tpl: ReportTemplate) => {
+    if (isFinalized) return;
+    if ((findings || conclusion) && !window.confirm('¿Reemplazar el contenido actual con la plantilla?')) return;
+    setFindings(tpl.findingsTemplate);
+    setConclusion(tpl.conclusionTemplate);
+    setShowTemplates(false);
+    showMessage('success', `Plantilla "${tpl.name}" aplicada`);
+  };
 
   const isFinalized = report?.status === 'FINAL' || report?.status === 'SIGNED';
 
@@ -341,6 +374,11 @@ export function StudyDetailPage() {
                     {[
                       { label: 'Fecha nac.', value: formatDate(study.patient.dateOfBirth) },
                       { label: 'Sexo', value: study.patient.sex === 'M' ? 'Masculino' : study.patient.sex === 'F' ? 'Femenino' : 'N/E' },
+                      ...(study.patient.cuil ? [{ label: 'CUIL', value: study.patient.cuil }] : []),
+                      ...(study.patient.healthInsurance ? [{ label: 'Cobertura', value: study.patient.healthInsurance + (study.patient.healthInsurancePlan ? ` — ${study.patient.healthInsurancePlan}` : '') }] : []),
+                      ...(study.patient.healthInsuranceMemberId ? [{ label: 'Nº afiliado', value: study.patient.healthInsuranceMemberId }] : []),
+                      ...(study.requestingDoctorName ? [{ label: 'Médico solic.', value: study.requestingDoctorName }] : []),
+                      ...(study.insuranceOrderNumber ? [{ label: 'Nº de orden', value: study.insuranceOrderNumber }] : []),
                       { label: 'Médico asig.', value: study.assignedDoctor ? `Dr/a. ${study.assignedDoctor.lastName}` : 'Sin asignar' },
                       { label: 'Archivos', value: `${study.dicomFiles.length} archivo(s) DICOM` }
                     ].map(({ label, value }) => (
@@ -457,32 +495,59 @@ export function StudyDetailPage() {
               ═════════════════════════════════════════════════════ */
               <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
 
+                {/* Template selector */}
+                {templates.length > 0 && (
+                  <div style={{ position: 'relative' }}>
+                    <button
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => setShowTemplates((v) => !v)}
+                      style={{ width: '100%', justifyContent: 'space-between' }}
+                    >
+                      <span>📋 Usar plantilla de informe</span>
+                      <span>{showTemplates ? '▲' : '▼'}</span>
+                    </button>
+                    {showTemplates && (
+                      <div style={{
+                        position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 50,
+                        background: '#fff', border: '1px solid var(--gray-200)', borderRadius: 6,
+                        boxShadow: '0 4px 12px rgba(0,0,0,0.12)', maxHeight: 220, overflowY: 'auto'
+                      }}>
+                        {templates.map((tpl) => (
+                          <button
+                            key={tpl.id}
+                            type="button"
+                            onClick={() => applyTemplate(tpl)}
+                            style={{
+                              display: 'flex', alignItems: 'center', gap: 8,
+                              width: '100%', padding: '10px 14px', background: 'none',
+                              border: 'none', borderBottom: '1px solid var(--gray-100)',
+                              cursor: 'pointer', textAlign: 'left', fontSize: 13
+                            }}
+                            onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'var(--gray-50)'; }}
+                            onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'none'; }}
+                          >
+                            {tpl.modality && (
+                              <span className="badge badge-blue" style={{ fontSize: 10 }}>{tpl.modality}</span>
+                            )}
+                            <span className="font-medium">{tpl.name}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {/* Hallazgos */}
                 <div className="form-group" style={{ margin: 0 }}>
                   <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--gray-600)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                     Hallazgos *
                   </label>
-                  <textarea
+                  <RichTextEditor
                     value={findings}
-                    onChange={(e) => setFindings(e.target.value)}
+                    onChange={setFindings}
                     placeholder="Describa los hallazgos imagenológicos observados..."
-                    rows={6}
-                    style={{
-                      width: '100%',
-                      resize: 'vertical',
-                      minHeight: 110,
-                      fontSize: 13,
-                      lineHeight: 1.6,
-                      padding: '10px 12px',
-                      border: '1.5px solid var(--gray-300)',
-                      borderRadius: 8,
-                      background: '#fff',
-                      color: 'var(--gray-800)',
-                      outline: 'none',
-                      fontFamily: 'inherit'
-                    }}
-                    onFocus={(e) => { e.target.style.borderColor = 'var(--brand-400)'; }}
-                    onBlur={(e)  => { e.target.style.borderColor = 'var(--gray-300)'; }}
+                    minHeight={120}
+                    disabled={isFinalized}
                   />
                 </div>
 
@@ -491,27 +556,12 @@ export function StudyDetailPage() {
                   <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--gray-600)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                     Conclusión *
                   </label>
-                  <textarea
+                  <RichTextEditor
                     value={conclusion}
-                    onChange={(e) => setConclusion(e.target.value)}
+                    onChange={setConclusion}
                     placeholder="Conclusión diagnóstica..."
-                    rows={4}
-                    style={{
-                      width: '100%',
-                      resize: 'vertical',
-                      minHeight: 80,
-                      fontSize: 13,
-                      lineHeight: 1.6,
-                      padding: '10px 12px',
-                      border: '1.5px solid var(--gray-300)',
-                      borderRadius: 8,
-                      background: '#fff',
-                      color: 'var(--gray-800)',
-                      outline: 'none',
-                      fontFamily: 'inherit'
-                    }}
-                    onFocus={(e) => { e.target.style.borderColor = 'var(--brand-400)'; }}
-                    onBlur={(e)  => { e.target.style.borderColor = 'var(--gray-300)'; }}
+                    minHeight={90}
+                    disabled={isFinalized}
                   />
                 </div>
 

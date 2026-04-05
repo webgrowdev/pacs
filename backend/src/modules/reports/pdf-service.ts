@@ -7,13 +7,22 @@ export interface PdfInput {
   reportId: string;
   patientName: string;
   patientCode: string;
+  patientDni?: string;
+  patientCuil?: string;
   patientDob?: string;
   patientSex?: string;
+  healthInsurance?: string;
+  healthInsurancePlan?: string;
+  healthInsuranceMemberId?: string;
   studyDate?: string;
   studyModality?: string;
   studyDescription: string;
+  requestingDoctorName?: string;
+  insuranceOrderNumber?: string;
   institutionName?: string;
   doctorName: string;
+  doctorLicense?: string;
+  doctorSpecialty?: string;
   findings: string;
   conclusion: string;
   patientSummary?: string;
@@ -59,67 +68,114 @@ export async function generateClinicalPdf(input: PdfInput): Promise<string> {
 
     // ─── DATOS DEL PACIENTE ───────────────────────────────────────────────────
     const boxY = 110;
-    doc.rect(50, boxY, pageWidth, 75).fill(LIGHT_GRAY);
+    // Calculate box height based on fields present
+    const patientRows = 2 + (input.healthInsurance ? 1 : 0);
+    const patientBoxH = 20 + patientRows * 18;
+    doc.rect(50, boxY, pageWidth, patientBoxH).fill(LIGHT_GRAY);
 
     doc.fill(BRAND_COLOR).fontSize(9).font('Helvetica-Bold')
        .text('DATOS DEL PACIENTE', 62, boxY + 10);
 
     doc.fill(TEXT_COLOR).fontSize(10).font('Helvetica');
-    const col1 = 62, col2 = 280, row1 = boxY + 24, row2 = boxY + 42;
+    const col1 = 62, col2 = 280;
+    let rowY = boxY + 24;
 
-    doc.font('Helvetica-Bold').text('Paciente:', col1, row1).font('Helvetica')
-       .text(input.patientName, col1 + 60, row1);
+    doc.font('Helvetica-Bold').text('Paciente:', col1, rowY).font('Helvetica')
+       .text(input.patientName, col1 + 60, rowY);
+    doc.font('Helvetica-Bold').text('Código:', col2, rowY).font('Helvetica')
+       .text(input.patientCode, col2 + 50, rowY);
+    rowY += 18;
 
-    doc.font('Helvetica-Bold').text('Código:', col2, row1).font('Helvetica')
-       .text(input.patientCode, col2 + 50, row1);
-
-    if (input.patientDob) {
-      doc.font('Helvetica-Bold').text('Fecha nac.:', col1, row2).font('Helvetica')
-         .text(formatDateStr(input.patientDob), col1 + 70, row2);
+    if (input.patientDni || input.patientCuil) {
+      if (input.patientDni) {
+        doc.font('Helvetica-Bold').text('DNI:', col1, rowY).font('Helvetica')
+           .text(input.patientDni, col1 + 30, rowY);
+      }
+      if (input.patientCuil) {
+        doc.font('Helvetica-Bold').text('CUIL:', col2, rowY).font('Helvetica')
+           .text(input.patientCuil, col2 + 38, rowY);
+      }
+      rowY += 18;
     }
-    if (input.patientSex) {
-      doc.font('Helvetica-Bold').text('Sexo:', col2, row2).font('Helvetica')
-         .text(input.patientSex === 'M' ? 'Masculino' : input.patientSex === 'F' ? 'Femenino' : 'No especificado', col2 + 40, row2);
+
+    if (input.patientDob || input.patientSex) {
+      if (input.patientDob) {
+        doc.font('Helvetica-Bold').text('Fecha nac.:', col1, rowY).font('Helvetica')
+           .text(formatDateStr(input.patientDob), col1 + 70, rowY);
+      }
+      if (input.patientSex) {
+        doc.font('Helvetica-Bold').text('Sexo:', col2, rowY).font('Helvetica')
+           .text(input.patientSex === 'M' ? 'Masculino' : input.patientSex === 'F' ? 'Femenino' : 'No especificado', col2 + 40, rowY);
+      }
+      rowY += 18;
+    }
+
+    if (input.healthInsurance) {
+      doc.font('Helvetica-Bold').text('Cobertura:', col1, rowY).font('Helvetica')
+         .text(input.healthInsurance + (input.healthInsurancePlan ? ` — Plan: ${input.healthInsurancePlan}` : ''), col1 + 65, rowY, { width: pageWidth - 70 });
+      rowY += 18;
+    }
+
+    if (input.healthInsuranceMemberId) {
+      doc.font('Helvetica-Bold').text('Nº afiliado:', col1, rowY).font('Helvetica')
+         .text(input.healthInsuranceMemberId, col1 + 70, rowY);
+      rowY += 18;
     }
 
     // ─── DATOS DEL ESTUDIO ────────────────────────────────────────────────────
-    const studyY = boxY + 90;
-    doc.rect(50, studyY, pageWidth, 58).fill('#e8f4fd');
+    const studyY = boxY + patientBoxH + 6;
+    const studyRows = 2 + (input.requestingDoctorName ? 1 : 0) + (input.insuranceOrderNumber ? 1 : 0);
+    const studyBoxH = 20 + studyRows * 18;
+    doc.rect(50, studyY, pageWidth, studyBoxH).fill('#e8f4fd');
 
     doc.fill(BRAND_COLOR).fontSize(9).font('Helvetica-Bold')
        .text('DATOS DEL ESTUDIO', 62, studyY + 10);
 
     doc.fill(TEXT_COLOR).fontSize(10).font('Helvetica');
-    const sr1 = studyY + 24, sr2 = studyY + 40;
+    let sr = studyY + 24;
 
-    doc.font('Helvetica-Bold').text('Descripción:', col1, sr1).font('Helvetica')
-       .text(input.studyDescription, col1 + 80, sr1);
-
+    doc.font('Helvetica-Bold').text('Descripción:', col1, sr).font('Helvetica')
+       .text(input.studyDescription, col1 + 80, sr);
     if (input.studyModality) {
-      doc.font('Helvetica-Bold').text('Modalidad:', col2, sr1).font('Helvetica')
-         .text(input.studyModality, col2 + 68, sr1);
+      doc.font('Helvetica-Bold').text('Modalidad:', col2, sr).font('Helvetica')
+         .text(input.studyModality, col2 + 68, sr);
     }
+    sr += 18;
+
     if (input.studyDate) {
-      doc.font('Helvetica-Bold').text('Fecha estudio:', col1, sr2).font('Helvetica')
-         .text(formatDateStr(input.studyDate), col1 + 90, sr2);
+      doc.font('Helvetica-Bold').text('Fecha estudio:', col1, sr).font('Helvetica')
+         .text(formatDateStr(input.studyDate), col1 + 90, sr);
     }
-    doc.font('Helvetica-Bold').text('Médico:', col2, sr2).font('Helvetica')
-       .text(`Dr/a. ${input.doctorName}`, col2 + 50, sr2);
+    doc.font('Helvetica-Bold').text('Médico inf.:', col2, sr).font('Helvetica')
+       .text(`Dr/a. ${input.doctorName}`, col2 + 72, sr);
+    sr += 18;
+
+    if (input.requestingDoctorName) {
+      doc.font('Helvetica-Bold').text('Médico solic.:', col1, sr).font('Helvetica')
+         .text(input.requestingDoctorName, col1 + 88, sr);
+      sr += 18;
+    }
+
+    if (input.insuranceOrderNumber) {
+      doc.font('Helvetica-Bold').text('Nº de orden:', col1, sr).font('Helvetica')
+         .text(input.insuranceOrderNumber, col1 + 78, sr);
+      sr += 18;
+    }
 
     // ─── SEPARADOR ────────────────────────────────────────────────────────────
-    const contentStart = studyY + 75;
+    const contentStart = studyY + studyBoxH + 8;
     doc.y = contentStart;
 
     // ─── HALLAZGOS ────────────────────────────────────────────────────────────
     sectionTitle(doc, 'HALLAZGOS', pageWidth);
     doc.fill(TEXT_COLOR).fontSize(10.5).font('Helvetica')
-       .text(input.findings, { align: 'justify', lineGap: 2 });
+       .text(stripHtml(input.findings), { align: 'justify', lineGap: 2 });
     doc.moveDown(1.2);
 
     // ─── CONCLUSIÓN ───────────────────────────────────────────────────────────
     sectionTitle(doc, 'CONCLUSIÓN', pageWidth);
     doc.fill(TEXT_COLOR).fontSize(10.5).font('Helvetica')
-       .text(input.conclusion, { align: 'justify', lineGap: 2 });
+       .text(stripHtml(input.conclusion), { align: 'justify', lineGap: 2 });
     doc.moveDown(1.2);
 
     // ─── MEDICIONES ───────────────────────────────────────────────────────────
@@ -135,23 +191,38 @@ export async function generateClinicalPdf(input: PdfInput): Promise<string> {
 
     // ─── RESUMEN PARA EL PACIENTE ─────────────────────────────────────────────
     if (input.patientSummary) {
+      const summaryText = stripHtml(input.patientSummary);
       sectionTitle(doc, 'RESUMEN PARA EL PACIENTE', pageWidth);
-      doc.rect(50, doc.y, pageWidth, estimateTextHeight(input.patientSummary) + 20).fill('#f0fdf4');
+      doc.rect(50, doc.y, pageWidth, estimateTextHeight(summaryText) + 20).fill('#f0fdf4');
       doc.fill('#166534').fontSize(10).font('Helvetica-Oblique')
-         .text(input.patientSummary, 62, doc.y + 10, { width: pageWidth - 24, lineGap: 2 });
+         .text(summaryText, 62, doc.y + 10, { width: pageWidth - 24, lineGap: 2 });
       doc.moveDown(1.5);
     }
 
     // ─── FIRMA DEL MÉDICO ─────────────────────────────────────────────────────
     doc.moveDown(2);
     const sigY = doc.y;
-    doc.rect(col2 - 10, sigY, 200, 50).fill(LIGHT_GRAY);
+    const sigBoxH = 60 + (input.doctorLicense ? 12 : 0) + (input.doctorSpecialty ? 12 : 0);
+    doc.rect(col2 - 10, sigY, 200, sigBoxH).fill(LIGHT_GRAY);
+    let sigTextY = sigY + 8;
     doc.fill(BRAND_COLOR).fontSize(10).font('Helvetica-Bold')
-       .text(`Dr/a. ${input.doctorName}`, col2, sigY + 10, { width: 180, align: 'center' });
+       .text(`Dr/a. ${input.doctorName}`, col2, sigTextY, { width: 180, align: 'center' });
+    sigTextY += 14;
+    if (input.doctorSpecialty) {
+      doc.fill(SUBTITLE_COLOR).fontSize(8).font('Helvetica')
+         .text(input.doctorSpecialty, col2, sigTextY, { width: 180, align: 'center' });
+      sigTextY += 12;
+    }
+    if (input.doctorLicense) {
+      doc.fill(SUBTITLE_COLOR).fontSize(8).font('Helvetica')
+         .text(`Mat. ${input.doctorLicense}`, col2, sigTextY, { width: 180, align: 'center' });
+      sigTextY += 12;
+    }
     doc.fill(SUBTITLE_COLOR).fontSize(8).font('Helvetica')
-       .text('Médico informante', col2, sigY + 28, { width: 180, align: 'center' });
+       .text('Médico informante', col2, sigTextY, { width: 180, align: 'center' });
+    sigTextY += 12;
     doc.fill(SUBTITLE_COLOR).fontSize(8)
-       .text(`Firmado: ${formatDate(new Date())}`, col2, sigY + 40, { width: 180, align: 'center' });
+       .text(`Firmado: ${formatDate(new Date())}`, col2, sigTextY, { width: 180, align: 'center' });
 
     // ─── DISCLAIMER IA ────────────────────────────────────────────────────────
     doc.addPage();
@@ -204,4 +275,36 @@ function formatDateStr(s: string): string {
 
 function estimateTextHeight(text: string): number {
   return Math.ceil(text.length / 90) * 13;
+}
+
+/** Strip HTML tags from rich-text content before inserting into PDF.
+ *
+ * Security note: this function produces plain text for PDFKit — it is NOT
+ * an HTML sanitizer for rendering. The output is never interpreted as HTML.
+ * The stripping is defensive-in-depth: the primary XSS defense for stored
+ * content is DOMPurify in the RichTextEditor on the client side.
+ */
+export function stripHtml(html: string): string {
+  return html
+    // Remove script blocks: match opening tag + any content + closing tag.
+    // Use a permissive closing-tag pattern to handle `</script >` variants.
+    .replace(/<script\b[\s\S]*?<\/script\s*>/gi, '')
+    .replace(/<style\b[\s\S]*?<\/style\s*>/gi, '')
+    // Normalize block-level elements to newlines before stripping tags
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>/gi, '\n')
+    .replace(/<\/li>/gi, '\n')
+    .replace(/<\/div>/gi, '\n')
+    // Strip all remaining HTML tags (angle-bracket content)
+    .replace(/<[^>]*>/g, '')
+    // Decode HTML entities (order: named before &amp; to avoid double decode)
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    // Collapse excessive blank lines
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }

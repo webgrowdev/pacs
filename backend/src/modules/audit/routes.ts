@@ -102,8 +102,16 @@ auditRouter.get('/devices', async (_req: AuthRequest, res: any) => {
 
 auditRouter.get('/export', async (req: AuthRequest, res: any) => {
   try {
-    const from = req.query.from ? new Date(String(req.query.from)) : new Date(Date.now() - 30 * 86400000);
-    const to = req.query.to ? new Date(String(req.query.to)) : new Date();
+    const fromRaw = req.query.from ? new Date(String(req.query.from)) : new Date(Date.now() - 30 * 86400000);
+    const toRaw   = req.query.to   ? new Date(String(req.query.to))   : new Date();
+
+    // Reject invalid / non-parseable date strings to avoid Prisma crashes
+    if (isNaN(fromRaw.getTime()) || isNaN(toRaw.getTime())) {
+      return res.status(400).json({ message: 'Parámetros from/to inválidos. Use formato ISO 8601 (ej. 2024-01-01T00:00:00Z).' });
+    }
+
+    const from = fromRaw;
+    const to   = toRaw;
     const format = req.query.format === 'json' ? 'json' : 'csv';
 
     const logs = await prisma.auditLog.findMany({
@@ -119,10 +127,15 @@ auditRouter.get('/export', async (req: AuthRequest, res: any) => {
     // CSV
     function escapeCell(val: any): string {
       const str = String(val ?? '');
-      if (str.includes(',') || str.includes('"') || str.includes('\n')) {
-        return `"${str.replace(/"/g, '""')}"`;
+      // Formula injection guard: prepend a single quote to cells starting with
+      // = + - @ to prevent Excel/LibreOffice from interpreting the content as a
+      // formula when the CSV is opened. The quote is visible in formula bar but
+      // harmless in the cell display for normal content.
+      const sanitized = /^[=+\-@]/.test(str) ? `'${str}` : str;
+      if (sanitized.includes(',') || sanitized.includes('"') || sanitized.includes('\n')) {
+        return `"${sanitized.replace(/"/g, '""')}"`;
       }
-      return str;
+      return sanitized;
     }
 
     const headers = ['id', 'timestamp', 'userEmail', 'userName', 'action', 'entityType', 'entityId', 'payload'];

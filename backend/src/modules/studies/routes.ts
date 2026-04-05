@@ -179,7 +179,9 @@ const uploadSchema = z.object({
   modality: z.string().min(1).max(10),
   studyDate: z.string().refine((v) => !isNaN(Date.parse(v)), { message: 'Fecha inválida' }),
   description: z.string().max(500).optional(),
-  assignedDoctorId: z.string().optional()
+  assignedDoctorId: z.string().optional(),
+  requestingDoctorName: z.string().max(200).optional(),
+  insuranceOrderNumber: z.string().max(100).optional()
 });
 
 // Carga de estudio DICOM
@@ -190,7 +192,7 @@ studiesRouter.post('/upload', requireRole('ADMIN', 'DOCTOR') as any, upload.arra
   const files = (req.files as Express.Multer.File[]) || [];
   if (!files.length) return res.status(400).json({ message: 'Debe subir al menos un archivo DICOM, ZIP o TAR' });
 
-  const { patientId, modality, studyDate, description, assignedDoctorId } = parsedBody.data;
+  const { patientId, modality, studyDate, description, assignedDoctorId, requestingDoctorName, insuranceOrderNumber } = parsedBody.data;
 
   // Verificar que el paciente existe
   try {
@@ -213,6 +215,8 @@ studiesRouter.post('/upload', requireRole('ADMIN', 'DOCTOR') as any, upload.arra
         studyDate: new Date(studyDate),
         description: description || null,
         assignedDoctorId: assignedDoctorId || null,
+        requestingDoctorName: requestingDoctorName || null,
+        insuranceOrderNumber: insuranceOrderNumber || null,
         uploadedById: req.user!.sub
       }
     });
@@ -232,10 +236,24 @@ studiesRouter.post('/upload', requireRole('ADMIN', 'DOCTOR') as any, upload.arra
 
       if (lowerName.endsWith('.zip')) {
         // ── ZIP ──────────────────────────────────────────────────────────────
+        // ZIP bomb protection: reject any single entry whose uncompressed size
+        // exceeds 200 MB to prevent memory exhaustion (DoS).
+        const MAX_ENTRY_BYTES = 200 * 1024 * 1024; // 200 MB
         const zip = new AdmZip(file.path);
         for (const entry of zip.getEntries()) {
           if (entry.isDirectory) continue;
-          const name = entry.entryName.replace(/\//g, '_');
+          // Security: use basename only — prevents path traversal via entry names
+          // that contain '../', absolute paths, or Windows backslashes.
+          const name = path.basename(entry.entryName);
+          if (!name) continue; // skip entries with no usable filename
+          // ZIP bomb guard: check uncompressed size before decompressing.
+          // adm-zip 0.5.x exposes `header.size` as the uncompressed byte count.
+          // Using `as any` because the TypeScript types ship without this property
+          // declared, but it is a stable part of the adm-zip implementation.
+          if ((entry.header as any).size > MAX_ENTRY_BYTES) {
+            console.warn(`[STUDIES/UPLOAD zip] Entrada "${entry.entryName}" excede ${MAX_ENTRY_BYTES} bytes descomprimidos, ignorada`);
+            continue;
+          }
           const entryData = entry.getData();
           const parsed = safeParseDicom(entryData);
           const out = path.join(storageFolder, name);
@@ -282,9 +300,11 @@ studiesRouter.post('/upload', requireRole('ADMIN', 'DOCTOR') as any, upload.arra
         // ── Single DICOM file ──────────────────────────────────────────────
         const data = fs.readFileSync(file.path);
         const parsed = safeParseDicom(data);
-        const out = path.join(storageFolder, file.originalname);
+        // Security: use basename only — prevents path traversal via originalname
+        const safeName = path.basename(file.originalname);
+        const out = path.join(storageFolder, safeName);
         fs.copyFileSync(file.path, out);
-        await persistDicom(study.id, out, file.originalname, file.size, parsed);
+        await persistDicom(study.id, out, safeName, file.size, parsed);
         persistedFiles += 1;
       }
     } catch (e) {

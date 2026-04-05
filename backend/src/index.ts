@@ -12,6 +12,7 @@ import { usersRouter } from './modules/users/routes.js';
 import { patientsRouter } from './modules/patients/routes.js';
 import { studiesRouter } from './modules/studies/routes.js';
 import { reportsRouter } from './modules/reports/routes.js';
+import { reportTemplatesRouter } from './modules/reports/templates-routes.js';
 import { aiRouter } from './modules/ai/routes.js';
 import { portalRouter } from './modules/portal/routes.js';
 import { notificationsRouter } from './modules/notifications/routes.js';
@@ -117,12 +118,18 @@ app.get('/health', (_req, res) => {
 
 // ─── Archivos estáticos — autenticación + headers seguros ────────────────────
 // HIPAA §164.308(a)(4): role-based access to patient files
-// Note: study-level authorization is enforced in the /api/studies/:id route.
-// Direct file access is gated by requireAuth; full per-study authorization
-// requires streaming through an API endpoint (future improvement).
+// PATIENT role is blocked — patients access their own PDFs via the portal API
+// which enforces ownership checks before returning the URL.
 app.use(
   '/files',
   requireAuth as any,
+  (req: AuthRequest, res: Response, next: NextFunction) => {
+    // Patients must not be able to fetch arbitrary file paths (other patients' DICOMs)
+    if (req.user?.role === 'PATIENT') {
+      return res.status(403).json({ message: 'Acceso no autorizado' });
+    }
+    next();
+  },
   express.static(path.resolve(process.cwd(), env.STORAGE_ROOT), {
     setHeaders: (res) => {
       res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -142,7 +149,8 @@ app.use('/api/auth',          authRouter);
 app.use('/api/users',         usersRouter);
 app.use('/api/patients',      patientsRouter);
 app.use('/api/studies',       studiesRouter);
-app.use('/api/reports',       reportsRouter);
+app.use('/api/reports',           reportsRouter);
+app.use('/api/report-templates',  reportTemplatesRouter);
 app.use('/api/ai',            aiRouter);
 app.use('/api/portal',        portalRouter);
 app.use('/api/notifications', notificationsRouter);
@@ -210,9 +218,12 @@ function dicomWebAuthMiddleware(req: AuthRequest, res: Response, next: NextFunct
   }
 
   // Option B: IP allowlist (for trusted internal equipment networks)
+  // Security: use req.socket.remoteAddress (the actual TCP peer) instead of
+  // X-Forwarded-For, which is trivially spoofable by any client. If the server
+  // is behind a trusted reverse proxy, configure DICOM_SYSTEM_TOKEN instead.
   if (env.DICOM_ALLOWED_IPS) {
     const allowedIps = env.DICOM_ALLOWED_IPS.split(',').map((ip) => ip.trim());
-    const clientIp = (req.headers['x-forwarded-for'] as string || req.socket?.remoteAddress || '').split(',')[0].trim();
+    const clientIp = (req.socket?.remoteAddress ?? '').replace(/^::ffff:/, ''); // strip IPv6-mapped IPv4
     if (allowedIps.includes(clientIp) || allowedIps.includes('*')) {
       return next();
     }

@@ -125,13 +125,14 @@ function timeAgo(iso: string): string {
 // Main page
 // ─────────────────────────────────────────────────────────────────────────────
 
-type TabId = 'monitor' | 'tutorial' | 'audit' | 'config';
+type TabId = 'monitor' | 'tutorial' | 'audit' | 'config' | 'users';
 
 const TABS: Array<{ id: TabId; label: string; icon: string }> = [
   { id: 'monitor',  label: 'Equipos conectados', icon: '📡' },
   { id: 'tutorial', label: 'Tutorial de conexión', icon: '📋' },
   { id: 'audit',    label: 'Auditoría',           icon: '📊' },
   { id: 'config',   label: 'Configuración',        icon: '⚙' },
+  { id: 'users',    label: 'Usuarios',             icon: '👤' },
 ];
 
 export function AdminPage() {
@@ -142,7 +143,7 @@ export function AdminPage() {
       {/* Tabs */}
       <div style={{
         display: 'flex', gap: 4, borderBottom: '2px solid var(--gray-200)',
-        marginBottom: 24, marginLeft: -4
+        marginBottom: 24, marginLeft: -4, flexWrap: 'wrap'
       }}>
         {TABS.map((t) => (
           <button
@@ -175,12 +176,27 @@ export function AdminPage() {
         >
           <span>📦</span>Módulos
         </Link>
+        <Link
+          to="/admin/report-templates"
+          style={{
+            padding: '8px 18px',
+            fontSize: 13, fontWeight: 400,
+            color: 'var(--gray-500)',
+            borderBottom: '2px solid transparent',
+            marginBottom: -2, transition: 'all .15s',
+            display: 'flex', alignItems: 'center', gap: 6,
+            textDecoration: 'none'
+          }}
+        >
+          <span>📋</span>Plantillas
+        </Link>
       </div>
 
       {activeTab === 'monitor'  && <MonitorTab />}
       {activeTab === 'tutorial' && <TutorialTab />}
       {activeTab === 'audit'    && <AuditTab />}
       {activeTab === 'config'   && <ConfigTab />}
+      {activeTab === 'users'    && <UsersTab />}
     </AppLayout>
   );
 }
@@ -763,6 +779,201 @@ function ConfigTab() {
           </div>
         </div>
       </SectionCard>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TAB: Users management (matrícula, especialidad)
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface UserRecord {
+  id: string;
+  email: string;
+  firstName: string;
+  lastName: string;
+  licenseNumber?: string | null;
+  specialty?: string | null;
+  isActive: boolean;
+  role: { name: string };
+}
+
+function UsersTab() {
+  const [users,      setUsers]      = useState<UserRecord[]>([]);
+  const [loading,    setLoading]    = useState(true);
+  const [editingId,  setEditingId]  = useState<string | null>(null);
+  const [editForm,   setEditForm]   = useState({ firstName: '', lastName: '', licenseNumber: '', specialty: '' });
+  const [saving,     setSaving]     = useState(false);
+  const [message,    setMessage]    = useState('');
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const { data } = await api.get('/users');
+      setUsers(Array.isArray(data) ? data : []);
+    } catch {
+      // ignore
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const startEdit = (u: UserRecord) => {
+    setEditingId(u.id);
+    setEditForm({
+      firstName: u.firstName,
+      lastName: u.lastName,
+      licenseNumber: u.licenseNumber ?? '',
+      specialty: u.specialty ?? ''
+    });
+    setMessage('');
+  };
+
+  const cancelEdit = () => { setEditingId(null); setMessage(''); };
+
+  const saveEdit = async (id: string) => {
+    setSaving(true);
+    try {
+      await api.put(`/users/${id}`, {
+        firstName: editForm.firstName,
+        lastName: editForm.lastName,
+        licenseNumber: editForm.licenseNumber || null,
+        specialty: editForm.specialty || null
+      });
+      setMessage('✓ Guardado');
+      setEditingId(null);
+      load();
+    } catch (err: any) {
+      setMessage(err?.response?.data?.message ?? 'Error al guardar');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const toggleActive = async (u: UserRecord) => {
+    try {
+      await api.patch(`/users/${u.id}/toggle-active`);
+      load();
+    } catch {
+      // ignore
+    }
+  };
+
+  const roleColor: Record<string, string> = {
+    ADMIN: 'badge-purple',
+    DOCTOR: 'badge-blue',
+    PATIENT: 'badge-green'
+  };
+
+  return (
+    <div>
+      {message && (
+        <div className={`alert ${message.startsWith('✓') ? 'alert-success' : 'alert-error'}`} style={{ marginBottom: 16 }}>
+          <span>{message}</span>
+        </div>
+      )}
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Usuario</th>
+              <th>Rol</th>
+              <th>Matrícula</th>
+              <th>Especialidad</th>
+              <th>Estado</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr><td colSpan={6}><div className="empty-state"><div className="spinner" style={{ margin: '0 auto' }} /></div></td></tr>
+            ) : (
+              users.map((u) => (
+                <tr key={u.id} style={{ opacity: u.isActive ? 1 : 0.55 }}>
+                  {editingId === u.id ? (
+                    <>
+                      <td colSpan={2}>
+                        <div style={{ display: 'flex', gap: 6 }}>
+                          <input
+                            value={editForm.firstName}
+                            onChange={(e) => setEditForm(f => ({ ...f, firstName: e.target.value }))}
+                            placeholder="Nombre"
+                            style={{ width: 100, fontSize: 12, padding: '4px 8px' }}
+                          />
+                          <input
+                            value={editForm.lastName}
+                            onChange={(e) => setEditForm(f => ({ ...f, lastName: e.target.value }))}
+                            placeholder="Apellido"
+                            style={{ width: 100, fontSize: 12, padding: '4px 8px' }}
+                          />
+                        </div>
+                      </td>
+                      <td>
+                        <input
+                          value={editForm.licenseNumber}
+                          onChange={(e) => setEditForm(f => ({ ...f, licenseNumber: e.target.value }))}
+                          placeholder="Ej: MN 12345"
+                          style={{ width: 110, fontSize: 12, padding: '4px 8px' }}
+                        />
+                      </td>
+                      <td>
+                        <input
+                          value={editForm.specialty}
+                          onChange={(e) => setEditForm(f => ({ ...f, specialty: e.target.value }))}
+                          placeholder="Ej: Diagnóstico por Imágenes"
+                          style={{ width: 160, fontSize: 12, padding: '4px 8px' }}
+                        />
+                      </td>
+                      <td />
+                      <td>
+                        <div style={{ display: 'flex', gap: 4 }}>
+                          <button className="btn btn-primary btn-sm" onClick={() => saveEdit(u.id)} disabled={saving}>
+                            {saving ? '…' : 'Guardar'}
+                          </button>
+                          <button className="btn btn-secondary btn-sm" onClick={cancelEdit}>Cancelar</button>
+                        </div>
+                      </td>
+                    </>
+                  ) : (
+                    <>
+                      <td>
+                        <span className="font-medium">{u.lastName}, {u.firstName}</span>
+                        <div className="text-xs text-muted">{u.email}</div>
+                      </td>
+                      <td><span className={`badge ${roleColor[u.role.name] ?? 'badge-gray'}`}>{u.role.name}</span></td>
+                      <td className="text-sm">
+                        {u.licenseNumber ? <span style={{ color: 'var(--gray-700)' }}>{u.licenseNumber}</span> : <span className="text-muted">—</span>}
+                      </td>
+                      <td className="text-sm">
+                        {u.specialty ? <span style={{ color: 'var(--gray-700)' }}>{u.specialty}</span> : <span className="text-muted">—</span>}
+                      </td>
+                      <td>
+                        {u.isActive
+                          ? <span className="badge badge-green">Activo</span>
+                          : <span className="badge badge-gray">Inactivo</span>}
+                      </td>
+                      <td>
+                        <div style={{ display: 'flex', gap: 4 }}>
+                          <button className="btn btn-ghost btn-sm" onClick={() => startEdit(u)}>Editar</button>
+                          <button
+                            className="btn btn-ghost btn-sm"
+                            onClick={() => toggleActive(u)}
+                            title={u.isActive ? 'Desactivar' : 'Activar'}
+                          >
+                            {u.isActive ? '⏸' : '▶'}
+                          </button>
+                        </div>
+                      </td>
+                    </>
+                  )}
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

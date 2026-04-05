@@ -13,6 +13,7 @@ import { ReportsPage } from '../features/reports/ReportsPage';
 import { PortalPage } from '../features/portal/PortalPage';
 import { AdminPage } from '../features/admin/AdminPage';
 import { ModulesAdminPage } from '../features/admin/ModulesAdminPage';
+import { ReportTemplatesPage } from '../features/admin/ReportTemplatesPage';
 
 export function AppRouter() {
   const { user, mustChangePassword } = useAuth();
@@ -50,6 +51,7 @@ export function AppRouter() {
       <Route path="/patients/:id" element={<ProtectedRoute roles={['ADMIN', 'DOCTOR']}><PatientDetailPage /></ProtectedRoute>} />
       <Route path="/admin" element={<ProtectedRoute roles={['ADMIN']}><AdminPage /></ProtectedRoute>} />
       <Route path="/admin/modules" element={<ProtectedRoute roles={['ADMIN']}><ModulesAdminPage /></ProtectedRoute>} />
+      <Route path="/admin/report-templates" element={<ProtectedRoute roles={['ADMIN']}><ReportTemplatesPage /></ProtectedRoute>} />
       <Route path="/studies" element={<ProtectedRoute roles={['ADMIN', 'DOCTOR']}><StudiesPage /></ProtectedRoute>} />
       <Route path="/studies/:id" element={<ProtectedRoute roles={['ADMIN', 'DOCTOR']}><StudyDetailPage /></ProtectedRoute>} />
       <Route path="/worklist" element={<ProtectedRoute roles={['ADMIN', 'DOCTOR']}><WorklistPage /></ProtectedRoute>} />

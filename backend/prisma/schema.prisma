@@ -52,6 +52,8 @@ model User {
   passwordHash        String
   firstName           String
   lastName            String
+  licenseNumber       String?                          // Matrícula profesional
+  specialty           String?                          // Especialidad médica
   isActive            Boolean     @default(true)
   mustChangePassword  Boolean     @default(false)
   roleId              String
@@ -71,11 +73,15 @@ model Patient {
   internalCode     String               @unique
   firstName        String
   lastName         String
-  documentId       String               @unique
+  documentId       String               @unique        // DNI
+  cuil             String?                             // CUIL (formato: XX-XXXXXXXX-X)
   dateOfBirth      DateTime
   sex              String
   email            String?
   phone            String?
+  healthInsurance      String?                         // Nombre de la obra social / prepaga
+  healthInsurancePlan  String?                         // Plan de la cobertura
+  healthInsuranceMemberId String?                      // Número de afiliado
   studies          Study[]
   patientAccess    PatientPortalAccess?
   createdAt        DateTime             @default(now())
@@ -90,6 +96,8 @@ model Study {
   studyDate       DateTime
   status          StudyStatus     @default(UPLOADED)
   description     String?         @db.Text
+  requestingDoctorName  String?                        // Médico solicitante externo
+  insuranceOrderNumber  String?                        // Número de orden de la cobertura
   metadataJson    Json?
   uploadedById    String
   uploadedBy      User            @relation("UploaderStudies", fields: [uploadedById], references: [id])
@@ -247,4 +255,17 @@ model TenantModule {
   updatedAt     DateTime  @updatedAt
 
   @@unique([tenantId, moduleId])
+}
+
+// ─── Plantillas de informes por modalidad ─────────────────────────────────────
+
+model ReportTemplate {
+  id                 String   @id @default(cuid())
+  name               String                          // Nombre descriptivo de la plantilla
+  modality           String?                         // CT, MRI, RX, US, etc. (null = genérica)
+  findingsTemplate   String   @db.Text               // Texto pre-cargado para hallazgos
+  conclusionTemplate String   @db.Text               // Texto pre-cargado para conclusión
+  isActive           Boolean  @default(true)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 }

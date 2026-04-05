@@ -14,7 +14,16 @@ const createUserSchema = z.object({
   password: z.string().min(8).max(100),
   firstName: z.string().min(1).max(100),
   lastName: z.string().min(1).max(100),
-  roleName: z.enum(['ADMIN', 'DOCTOR', 'PATIENT'])
+  roleName: z.enum(['ADMIN', 'DOCTOR', 'PATIENT']),
+  licenseNumber: z.string().max(50).optional().nullable(),
+  specialty: z.string().max(100).optional().nullable()
+});
+
+const updateUserSchema = z.object({
+  firstName: z.string().min(1).max(100).optional(),
+  lastName: z.string().min(1).max(100).optional(),
+  licenseNumber: z.string().max(50).optional().nullable(),
+  specialty: z.string().max(100).optional().nullable()
 });
 
 // Listar usuarios
@@ -58,6 +67,8 @@ usersRouter.post('/', async (req: AuthRequest, res: any) => {
         passwordHash: await bcrypt.hash(parsed.data.password, 12),
         firstName: parsed.data.firstName,
         lastName: parsed.data.lastName,
+        licenseNumber: parsed.data.licenseNumber ?? null,
+        specialty: parsed.data.specialty ?? null,
         roleId: role.id
       },
       include: { role: true }
@@ -77,6 +88,10 @@ usersRouter.post('/', async (req: AuthRequest, res: any) => {
 
 // Activar/desactivar usuario
 usersRouter.patch('/:id/toggle-active', async (req: AuthRequest, res: any) => {
+  // Guard: prevent admin from deactivating their own account (self-lockout)
+  if (String(req.params.id) === req.user!.sub) {
+    return res.status(400).json({ message: 'No puede desactivar su propia cuenta de administrador' });
+  }
   try {
     const user = await prisma.user.findUnique({ where: { id: String(req.params.id) } });
     if (!user) return res.status(404).json({ message: 'Usuario no encontrado' });
@@ -97,6 +112,32 @@ usersRouter.patch('/:id/toggle-active', async (req: AuthRequest, res: any) => {
   }
 });
 
+// Actualizar datos del usuario (nombre, matrícula, especialidad)
+usersRouter.put('/:id', async (req: AuthRequest, res: any) => {
+  const parsed = updateUserSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ message: 'Datos inválidos', errors: parsed.error.flatten() });
+
+  try {
+    const updated = await prisma.user.update({
+      where: { id: String(req.params.id) },
+      data: {
+        firstName: parsed.data.firstName,
+        lastName: parsed.data.lastName,
+        licenseNumber: parsed.data.licenseNumber !== undefined ? (parsed.data.licenseNumber ?? null) : undefined,
+        specialty: parsed.data.specialty !== undefined ? (parsed.data.specialty ?? null) : undefined
+      },
+      include: { role: true }
+    });
+    await logAudit(req, 'USER_UPDATED', 'USER', updated.id);
+    const { passwordHash: _, ...safeUser } = updated as any;
+    return res.json(safeUser);
+  } catch (err: any) {
+    if (err?.code === 'P2025') return res.status(404).json({ message: 'Usuario no encontrado' });
+    console.error('[USERS/PUT]', err);
+    return res.status(500).json({ message: 'Error al actualizar usuario' });
+  }
+});
+
 // Listar médicos (para asignación)
 usersRouter.get('/doctors', async (_req: AuthRequest, res: any) => {
   try {
@@ -104,7 +145,7 @@ usersRouter.get('/doctors', async (_req: AuthRequest, res: any) => {
     if (!doctorRole) return res.json([]);
     const doctors = await prisma.user.findMany({
       where: { roleId: doctorRole.id, isActive: true },
-      select: { id: true, firstName: true, lastName: true, email: true }
+      select: { id: true, firstName: true, lastName: true, email: true, licenseNumber: true, specialty: true }
     });
     return res.json(doctors);
   } catch (err) {
