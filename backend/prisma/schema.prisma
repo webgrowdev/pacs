@@ -206,3 +206,45 @@ model Notification {
   isRead    Boolean  @default(false)
   createdAt DateTime @default(now())
 }
+
+// ─── Sistema de módulos ───────────────────────────────────────────────────────
+
+model Module {
+  id            String         @id @default(cuid())
+  code          String         @unique  // ej: "PACS", "AGENDA", "FACTURACION"
+  name          String
+  description   String         @db.Text
+  version       String         @default("1.0.0")
+  isActive      Boolean        @default(true)   // activo globalmente en el sistema
+  dependencies  Json?                           // array de codes requeridos
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  tenantModules TenantModule[]
+}
+
+model Tenant {
+  id        String         @id @default(cuid())
+  name      String                            // ej: "Hospital XYZ"
+  slug      String         @unique            // ej: "hospital-xyz"
+  cuit      String?                           // CUIT argentino (para facturación)
+  isActive  Boolean        @default(true)
+  config    Json?                             // configuración general del tenant
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+  modules   TenantModule[]
+}
+
+model TenantModule {
+  id            String    @id @default(cuid())
+  tenantId      String
+  tenant        Tenant    @relation(fields: [tenantId], references: [id])
+  moduleId      String
+  module        Module    @relation(fields: [moduleId], references: [id])
+  isActive      Boolean   @default(true)
+  config        Json?     // config específica de este módulo para este tenant
+  licensedUntil DateTime?
+  enabledAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@unique([tenantId, moduleId])
+}

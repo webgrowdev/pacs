@@ -18,6 +18,7 @@ import { notificationsRouter } from './modules/notifications/routes.js';
 import { dicomwebRouter } from './modules/dicomweb/routes.js';
 import { analyticsRouter } from './modules/analytics/routes.js';
 import { auditRouter } from './modules/audit/routes.js';
+import { systemRouter } from './modules/system/routes.js';
 import { startScpServer } from './dicom/scp-server.js';
 import { startSftpWatcher } from './dicom/sftp-watcher.js';
 
@@ -147,6 +148,7 @@ app.use('/api/portal',        portalRouter);
 app.use('/api/notifications', notificationsRouter);
 app.use('/api/analytics',     analyticsRouter);
 app.use('/api/audit',         auditRouter);
+app.use('/api/system',        systemRouter);
 
 // ─── DICOMweb — authentication required ──────────────────────────────────────
 // HIPAA §164.312(a)(2)(i): unauthenticated DICOM endpoints are a critical risk.

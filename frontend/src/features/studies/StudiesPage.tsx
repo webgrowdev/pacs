@@ -5,6 +5,8 @@ import { AppLayout } from '../../components/AppLayout';
 import { api } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
 
+type UploadMode = 'files' | 'folder';
+
 interface Study {
   id: string;
   modality: string;
@@ -35,11 +37,13 @@ export function StudiesPage() {
     studyDate: new Date().toISOString().split('T')[0],
     description: ''
   });
+  const [uploadMode, setUploadMode] = useState<UploadMode>('files');
   const [files, setFiles] = useState<FileList | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState('');
   const [uploadSuccess, setUploadSuccess] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
+  const folderRef = useRef<HTMLInputElement>(null);
 
   const load = async () => {
     setLoading(true);
@@ -84,12 +88,20 @@ export function StudiesPage() {
       setForm({ patientId: patientIdFilter, modality: 'RX', studyDate: new Date().toISOString().split('T')[0], description: '' });
       setFiles(null);
       if (fileRef.current) fileRef.current.value = '';
+      if (folderRef.current) folderRef.current.value = '';
       load();
     } catch (err: any) {
       setUploadError(err?.response?.data?.message ?? 'Error al cargar el estudio');
     } finally {
       setUploading(false);
     }
+  };
+
+  const handleModeChange = (mode: UploadMode) => {
+    setUploadMode(mode);
+    setFiles(null);
+    if (fileRef.current) fileRef.current.value = '';
+    if (folderRef.current) folderRef.current.value = '';
   };
 
   return (
@@ -168,7 +180,7 @@ export function StudiesPage() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            onClick={(e) => { if (e.target === e.currentTarget) setShowUpload(false); }}
+            onClick={(e) => { if (e.target === e.currentTarget) { setShowUpload(false); setUploadMode('files'); } }}
           >
             <motion.div
               className="modal"
@@ -179,7 +191,7 @@ export function StudiesPage() {
             >
               <div className="modal-header">
                 <h2 className="modal-title">Cargar nuevo estudio DICOM</h2>
-                <button className="btn btn-ghost btn-icon" onClick={() => setShowUpload(false)}>✕</button>
+                <button className="btn btn-ghost btn-icon" onClick={() => { setShowUpload(false); setUploadMode('files'); }}>✕</button>
               </div>
               <form onSubmit={handleUpload}>
                 <div className="modal-body form-grid">
@@ -209,24 +221,64 @@ export function StudiesPage() {
                     <input value={form.description} onChange={(e) => setForm(f => ({ ...f, description: e.target.value }))} placeholder="Ej: RM de rodilla derecha, RX de tórax AP..." />
                   </div>
                   <div className="form-group">
-                    <label>Archivos DICOM, ZIP o TAR *</label>
-                    <input
-                      ref={fileRef}
-                      type="file"
-                      multiple
-                      accept=".dcm,.dicom,.zip,.tar,.tar.gz,.tgz,.tar.bz2,.tbz,.tbz2,application/dicom,application/x-bzip2,application/x-tar,application/gzip"
-                      onChange={(e) => setFiles(e.target.files)}
-                      required
-                    />
-                    <span className="text-xs text-muted">
-                      Se aceptan: archivos <strong>.dcm</strong> individuales · <strong>.zip</strong> · <strong>.tar.bz2</strong> · <strong>.tar.gz</strong> · <strong>.tgz</strong> con varios archivos DICOM
-                    </span>
+                    <label>Tipo de carga</label>
+                    <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+                      <button
+                        type="button"
+                        className={`btn btn-sm ${uploadMode === 'files' ? 'btn-primary' : 'btn-secondary'}`}
+                        onClick={() => handleModeChange('files')}
+                      >
+                        📄 Archivos
+                      </button>
+                      <button
+                        type="button"
+                        className={`btn btn-sm ${uploadMode === 'folder' ? 'btn-primary' : 'btn-secondary'}`}
+                        onClick={() => handleModeChange('folder')}
+                      >
+                        📁 Carpeta
+                      </button>
+                    </div>
+
+                    {uploadMode === 'files' ? (
+                      <>
+                        <input
+                          ref={fileRef}
+                          type="file"
+                          multiple
+                          accept=".dcm,.dicom,.zip,.tar,.tar.gz,.tgz,.tar.bz2,.tbz,.tbz2,application/dicom,application/x-bzip2,application/x-tar,application/gzip"
+                          onChange={(e) => setFiles(e.target.files)}
+                          required
+                        />
+                        <span className="text-xs text-muted">
+                          Se aceptan: archivos <strong>.dcm</strong> individuales · <strong>.zip</strong> · <strong>.tar.bz2</strong> · <strong>.tar.gz</strong> · <strong>.tgz</strong> con varios archivos DICOM.
+                          También puede subir archivos <strong>.tar.bz2</strong> descomprimiéndolos primero o seleccionando el archivo comprimido directamente.
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <input
+                          ref={folderRef}
+                          type="file"
+                          {...({ webkitdirectory: '', mozdirectory: '' } as any)}
+                          onChange={(e) => setFiles(e.target.files)}
+                          required
+                        />
+                        {files && files.length > 0 && (
+                          <span className="text-xs" style={{ color: 'var(--brand-600)', display: 'block', marginTop: 4 }}>
+                            📁 {files.length} archivo(s) detectado(s) en la carpeta seleccionada
+                          </span>
+                        )}
+                        <span className="text-xs text-muted">
+                          Seleccione la carpeta raíz del estudio. Se procesarán todos los archivos DICOM encontrados, incluyendo subcarpetas y DICOMDIR.
+                        </span>
+                      </>
+                    )}
                   </div>
                   {uploadError && <div className="alert alert-error"><span>✕</span><span>{uploadError}</span></div>}
                   {uploadSuccess && <div className="alert alert-success"><span>✓</span><span>{uploadSuccess}</span></div>}
                 </div>
                 <div className="modal-footer">
-                  <button type="button" className="btn btn-secondary" onClick={() => setShowUpload(false)}>Cancelar</button>
+                  <button type="button" className="btn btn-secondary" onClick={() => { setShowUpload(false); setUploadMode('files'); }}>Cancelar</button>
                   <button type="submit" className="btn btn-primary" disabled={uploading}>
                     {uploading ? 'Cargando...' : 'Subir estudio'}
                   </button>
