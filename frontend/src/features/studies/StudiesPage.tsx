@@ -251,7 +251,7 @@ export function StudiesPage() {
                         />
                         <span className="text-xs text-muted">
                           Se aceptan: archivos <strong>.dcm</strong> individuales · <strong>.zip</strong> · <strong>.tar.bz2</strong> · <strong>.tar.gz</strong> · <strong>.tgz</strong> con varios archivos DICOM.
-                          También puede subir archivos <strong>.bz.tar</strong> descomprimiéndolos primero o seleccionando el archivo comprimido directamente.
+                          También puede subir archivos <strong>.tar.bz2</strong> descomprimiéndolos primero o seleccionando el archivo comprimido directamente.
                         </span>
                       </>
                     ) : (
