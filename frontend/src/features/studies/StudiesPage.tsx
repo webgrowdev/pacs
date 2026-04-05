@@ -35,7 +35,9 @@ export function StudiesPage() {
     patientId: patientIdFilter,
     modality: 'RX',
     studyDate: new Date().toISOString().split('T')[0],
-    description: ''
+    description: '',
+    requestingDoctorName: '',
+    insuranceOrderNumber: ''
   });
   const [uploadMode, setUploadMode] = useState<UploadMode>('files');
   const [files, setFiles] = useState<FileList | null>(null);
@@ -79,13 +81,15 @@ export function StudiesPage() {
       fd.append('modality', form.modality);
       fd.append('studyDate', new Date(form.studyDate + 'T12:00:00Z').toISOString());
       fd.append('description', form.description);
+      if (form.requestingDoctorName) fd.append('requestingDoctorName', form.requestingDoctorName);
+      if (form.insuranceOrderNumber) fd.append('insuranceOrderNumber', form.insuranceOrderNumber);
       for (let i = 0; i < files.length; i++) fd.append('files', files[i]);
 
       const { data } = await api.post('/studies/upload', fd, {
         headers: { 'Content-Type': 'multipart/form-data' }
       });
       setUploadSuccess(`Estudio creado. ${data.files} archivo(s) procesado(s).`);
-      setForm({ patientId: patientIdFilter, modality: 'RX', studyDate: new Date().toISOString().split('T')[0], description: '' });
+      setForm({ patientId: patientIdFilter, modality: 'RX', studyDate: new Date().toISOString().split('T')[0], description: '', requestingDoctorName: '', insuranceOrderNumber: '' });
       setFiles(null);
       if (fileRef.current) fileRef.current.value = '';
       if (folderRef.current) folderRef.current.value = '';
@@ -219,6 +223,24 @@ export function StudiesPage() {
                   <div className="form-group">
                     <label>Descripción</label>
                     <input value={form.description} onChange={(e) => setForm(f => ({ ...f, description: e.target.value }))} placeholder="Ej: RM de rodilla derecha, RX de tórax AP..." />
+                  </div>
+                  <div className="form-row">
+                    <div className="form-group">
+                      <label>Médico solicitante</label>
+                      <input
+                        value={form.requestingDoctorName}
+                        onChange={(e) => setForm(f => ({ ...f, requestingDoctorName: e.target.value }))}
+                        placeholder="Dr/a. Nombre y apellido (opcional)"
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>Nº de orden de cobertura</label>
+                      <input
+                        value={form.insuranceOrderNumber}
+                        onChange={(e) => setForm(f => ({ ...f, insuranceOrderNumber: e.target.value }))}
+                        placeholder="Número de orden (opcional)"
+                      />
+                    </div>
                   </div>
                   <div className="form-group">
                     <label>Tipo de carga</label>

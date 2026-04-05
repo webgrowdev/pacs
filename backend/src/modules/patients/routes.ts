@@ -13,10 +13,18 @@ const patientSchema = z.object({
   firstName: z.string().min(1).max(100),
   lastName: z.string().min(1).max(100),
   documentId: z.string().min(5).max(30),
+  cuil: z
+    .string()
+    .regex(/^\d{2}-\d{7,8}-\d$/, 'CUIL inválido. Formato esperado: XX-XXXXXXXX-X')
+    .optional()
+    .nullable(),
   dateOfBirth: z.string().refine((v) => !isNaN(Date.parse(v)), { message: 'Fecha inválida' }),
   sex: z.enum(['M', 'F', 'X']),
   email: z.string().email().optional().nullable(),
-  phone: z.string().max(30).optional().nullable()
+  phone: z.string().max(30).optional().nullable(),
+  healthInsurance: z.string().max(100).optional().nullable(),
+  healthInsurancePlan: z.string().max(100).optional().nullable(),
+  healthInsuranceMemberId: z.string().max(50).optional().nullable()
 });
 
 // Listar y buscar pacientes (con paginación)
@@ -89,7 +97,11 @@ patientsRouter.post('/', requireRole('ADMIN') as any, async (req: AuthRequest, r
         ...parsed.data,
         dateOfBirth: new Date(parsed.data.dateOfBirth),
         email: parsed.data.email ?? null,
-        phone: parsed.data.phone ?? null
+        phone: parsed.data.phone ?? null,
+        cuil: parsed.data.cuil ?? null,
+        healthInsurance: parsed.data.healthInsurance ?? null,
+        healthInsurancePlan: parsed.data.healthInsurancePlan ?? null,
+        healthInsuranceMemberId: parsed.data.healthInsuranceMemberId ?? null
       }
     });
     await logAudit(req, 'PATIENT_CREATED', 'PATIENT', patient.id);
@@ -114,7 +126,11 @@ patientsRouter.put('/:id', requireRole('ADMIN') as any, async (req: AuthRequest,
       where: { id: String(req.params.id) },
       data: {
         ...parsed.data,
-        dateOfBirth: parsed.data.dateOfBirth ? new Date(parsed.data.dateOfBirth) : undefined
+        dateOfBirth: parsed.data.dateOfBirth ? new Date(parsed.data.dateOfBirth) : undefined,
+        cuil: parsed.data.cuil !== undefined ? (parsed.data.cuil ?? null) : undefined,
+        healthInsurance: parsed.data.healthInsurance !== undefined ? (parsed.data.healthInsurance ?? null) : undefined,
+        healthInsurancePlan: parsed.data.healthInsurancePlan !== undefined ? (parsed.data.healthInsurancePlan ?? null) : undefined,
+        healthInsuranceMemberId: parsed.data.healthInsuranceMemberId !== undefined ? (parsed.data.healthInsuranceMemberId ?? null) : undefined
       }
     });
     await logAudit(req, 'PATIENT_UPDATED', 'PATIENT', patient.id);

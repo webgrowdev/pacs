@@ -11,14 +11,22 @@ interface Patient {
   firstName: string;
   lastName: string;
   documentId: string;
+  cuil?: string;
   dateOfBirth: string;
   sex: string;
   email?: string;
   phone?: string;
+  healthInsurance?: string;
+  healthInsurancePlan?: string;
+  healthInsuranceMemberId?: string;
   _count?: { studies: number };
 }
 
-const EMPTY_FORM = { internalCode: '', firstName: '', lastName: '', documentId: '', dateOfBirth: '', sex: 'M', email: '', phone: '' };
+const EMPTY_FORM = {
+  internalCode: '', firstName: '', lastName: '', documentId: '', cuil: '',
+  dateOfBirth: '', sex: 'M', email: '', phone: '',
+  healthInsurance: '', healthInsurancePlan: '', healthInsuranceMemberId: ''
+};
 
 export function PatientsPage() {
   const { user } = useAuth();
@@ -69,10 +77,14 @@ export function PatientsPage() {
       firstName: p.firstName,
       lastName: p.lastName,
       documentId: p.documentId,
+      cuil: p.cuil ?? '',
       dateOfBirth: p.dateOfBirth ? p.dateOfBirth.split('T')[0] : '',
       sex: p.sex,
       email: p.email ?? '',
-      phone: p.phone ?? ''
+      phone: p.phone ?? '',
+      healthInsurance: p.healthInsurance ?? '',
+      healthInsurancePlan: p.healthInsurancePlan ?? '',
+      healthInsuranceMemberId: p.healthInsuranceMemberId ?? ''
     });
     setError('');
     setShowModal(true);
@@ -269,6 +281,51 @@ export function PatientsPage() {
                     <div className="form-group">
                       <label>Teléfono</label>
                       <input value={form.phone} onChange={(e) => setForm(f => ({ ...f, phone: e.target.value }))} placeholder="opcional" />
+                    </div>
+                  </div>
+                  <div className="form-row">
+                    <div className="form-group">
+                      <label>CUIL</label>
+                      <input
+                        value={form.cuil}
+                        onChange={(e) => setForm(f => ({ ...f, cuil: e.target.value }))}
+                        placeholder="ej. 20-12345678-9"
+                        pattern="^\d{2}-\d{7,8}-\d$"
+                        title="Formato: XX-XXXXXXXX-X"
+                      />
+                    </div>
+                    <div className="form-group" />
+                  </div>
+                  <div style={{ borderTop: '1px solid var(--gray-200)', paddingTop: 12, marginTop: 4 }}>
+                    <div className="text-xs text-muted" style={{ fontWeight: 600, marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Cobertura médica</div>
+                    <div className="form-row">
+                      <div className="form-group">
+                        <label>Obra social / prepaga</label>
+                        <input
+                          value={form.healthInsurance}
+                          onChange={(e) => setForm(f => ({ ...f, healthInsurance: e.target.value }))}
+                          placeholder="ej. OSDE, PAMI, Swiss Medical..."
+                        />
+                      </div>
+                      <div className="form-group">
+                        <label>Plan</label>
+                        <input
+                          value={form.healthInsurancePlan}
+                          onChange={(e) => setForm(f => ({ ...f, healthInsurancePlan: e.target.value }))}
+                          placeholder="ej. 210, Gold, Básico..."
+                        />
+                      </div>
+                    </div>
+                    <div className="form-row">
+                      <div className="form-group">
+                        <label>Número de afiliado</label>
+                        <input
+                          value={form.healthInsuranceMemberId}
+                          onChange={(e) => setForm(f => ({ ...f, healthInsuranceMemberId: e.target.value }))}
+                          placeholder="opcional"
+                        />
+                      </div>
+                      <div className="form-group" />
                     </div>
                   </div>
                   {error && <div className="alert alert-error"><span>✕</span><span>{error}</span></div>}

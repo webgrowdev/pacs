@@ -176,7 +176,7 @@ reportsRouter.post('/:id/finalize', requireRole('DOCTOR', 'ADMIN') as any, async
       where: { id: String(req.params.id) },
       include: {
         study: { include: { patient: true } },
-        doctor: true,
+        doctor: { select: { id: true, firstName: true, lastName: true, licenseNumber: true, specialty: true } },
         measurements: true
       }
     });
@@ -198,12 +198,21 @@ reportsRouter.post('/:id/finalize', requireRole('DOCTOR', 'ADMIN') as any, async
       reportId: report.id,
       patientName: `${patient.firstName} ${patient.lastName}`,
       patientCode: patient.internalCode,
+      patientDni: patient.documentId,
+      patientCuil: patient.cuil || undefined,
       patientDob: patient.dateOfBirth?.toISOString(),
       patientSex: patient.sex,
+      healthInsurance: patient.healthInsurance || undefined,
+      healthInsurancePlan: patient.healthInsurancePlan || undefined,
+      healthInsuranceMemberId: patient.healthInsuranceMemberId || undefined,
       studyDate: report.study.studyDate?.toISOString(),
       studyModality: report.study.modality,
       studyDescription: report.study.description || report.study.modality,
+      requestingDoctorName: report.study.requestingDoctorName || undefined,
+      insuranceOrderNumber: report.study.insuranceOrderNumber || undefined,
       doctorName: `${report.doctor.firstName} ${report.doctor.lastName}`,
+      doctorLicense: (report.doctor as any).licenseNumber || undefined,
+      doctorSpecialty: (report.doctor as any).specialty || undefined,
       findings: report.findings,
       conclusion: report.conclusion,
       patientSummary: report.patientSummary || undefined,

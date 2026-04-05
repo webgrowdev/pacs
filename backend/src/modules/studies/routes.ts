@@ -179,7 +179,9 @@ const uploadSchema = z.object({
   modality: z.string().min(1).max(10),
   studyDate: z.string().refine((v) => !isNaN(Date.parse(v)), { message: 'Fecha inválida' }),
   description: z.string().max(500).optional(),
-  assignedDoctorId: z.string().optional()
+  assignedDoctorId: z.string().optional(),
+  requestingDoctorName: z.string().max(200).optional(),
+  insuranceOrderNumber: z.string().max(100).optional()
 });
 
 // Carga de estudio DICOM
@@ -190,7 +192,7 @@ studiesRouter.post('/upload', requireRole('ADMIN', 'DOCTOR') as any, upload.arra
   const files = (req.files as Express.Multer.File[]) || [];
   if (!files.length) return res.status(400).json({ message: 'Debe subir al menos un archivo DICOM, ZIP o TAR' });
 
-  const { patientId, modality, studyDate, description, assignedDoctorId } = parsedBody.data;
+  const { patientId, modality, studyDate, description, assignedDoctorId, requestingDoctorName, insuranceOrderNumber } = parsedBody.data;
 
   // Verificar que el paciente existe
   try {
@@ -213,6 +215,8 @@ studiesRouter.post('/upload', requireRole('ADMIN', 'DOCTOR') as any, upload.arra
         studyDate: new Date(studyDate),
         description: description || null,
         assignedDoctorId: assignedDoctorId || null,
+        requestingDoctorName: requestingDoctorName || null,
+        insuranceOrderNumber: insuranceOrderNumber || null,
         uploadedById: req.user!.sub
       }
     });
