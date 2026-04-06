@@ -16,7 +16,8 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import OpenAI from 'openai';
-import { requireAuth, requireRole } from '../../middleware/auth.js';
+import { requireAuth, requireRole, AuthRequest } from '../../middleware/auth.js';
+import { logAudit } from '../../middleware/audit.js';
 import { env } from '../../config/env.js';
 import { scrubPhiFromText } from '../../utils/security.js';
 
@@ -40,6 +41,12 @@ aiRouter.post('/suggest-report', async (req: any, res: any) => {
   const parsed = suggestSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ message: 'Notas inválidas' });
   const { notes } = parsed.data;
+
+  // Audit: AI suggestion requested
+  await logAudit(req, 'AI_SUGGESTION_REQUESTED', 'AI', undefined, {
+    section: 'suggest-report',
+    model: env.OPENAI_API_KEY ? env.OPENAI_MODEL : 'local-template'
+  });
 
   const openai = getOpenAI();
   if (openai) {
@@ -86,6 +93,11 @@ aiRouter.post('/patient-summary', async (req: any, res: any) => {
   if (!parsed.success) return res.status(400).json({ message: 'Conclusión inválida' });
   const { conclusion } = parsed.data;
 
+  await logAudit(req, 'AI_SUGGESTION_REQUESTED', 'AI', undefined, {
+    section: 'patient-summary',
+    model: env.OPENAI_API_KEY ? env.OPENAI_MODEL : 'local-template'
+  });
+
   const openai = getOpenAI();
   if (openai) {
     try {
@@ -122,6 +134,11 @@ aiRouter.post('/check-consistency', async (req: any, res: any) => {
   const parsed = consistencySchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ message: 'Datos inválidos' });
   const { findings, conclusion, modality } = parsed.data;
+
+  await logAudit(req, 'AI_CONSISTENCY_CHECK', 'AI', undefined, {
+    modality,
+    model: env.OPENAI_API_KEY ? env.OPENAI_MODEL : 'local-rules'
+  });
 
   const openai = getOpenAI();
   if (openai) {

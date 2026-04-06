@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, useImperativeHandle, forwardRef } from 'react';
 import * as cornerstone from '@cornerstonejs/core';
 import * as csTools from '@cornerstonejs/tools';
 // Static import — dynamic import() fails for this package in browser ESM
@@ -7,6 +7,7 @@ import * as csTools from '@cornerstonejs/tools';
 // with @cornerstonejs/core via registerImageLoader() internally.
 import { init as dicomLoaderInit } from '@cornerstonejs/dicom-image-loader';
 import { getAccessToken } from '../../lib/auth';
+import { api } from '../../lib/api';
 
 // ─── One-time initialization guards (module-level, survive hot-reload) ────────
 let cornerstoneInitialized = false;
@@ -34,17 +35,48 @@ async function initializeCornerstone() {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** A measurement extracted from a CornerstoneJS annotation */
+/**
+ * A measurement extracted from a CornerstoneJS annotation with full traceability.
+ * Includes primary evidence references so the measurement can be linked back to
+ * the exact image, frame, and geometry in the DICOM archive.
+ */
 export interface ViewerMeasurement {
-  type: string;
-  label: string;
-  value: number;
-  unit: string;
+  // Tool metadata
+  type:    string;
+  label:   string;
+  value:   number;
+  unit:    string;
+  toolName: string;
+
+  // Primary evidence references (parsed from CornerstoneJS annotation metadata)
+  sopInstanceUid?:      string;  // parsed from referencedImageId WADO URI
+  seriesInstanceUid?:   string;
+  studyInstanceUid?:    string;
+  frameOfReferenceUid?: string;
+  instanceNumber?:      number;
+  frameIndex?:          number;
+
+  // Geometry — array of {x, y} points in image pixel space
+  coordinatesJson?: Array<{ x: number; y: number }>;
+  imageWidth?:      number;
+  imageHeight?:     number;
+
+  // Additional statistics from ROI
+  extraStatsJson?: Record<string, number>;
+}
+
+/** Imperative handle exposed via ref so StudyDetailPage can navigate to a frame */
+export interface DicomViewerHandle {
+  navigateToFrame: (frameIndex: number) => Promise<void>;
+  navigateToSopInstance: (sopInstanceUid: string, frameIndex?: number) => Promise<void>;
 }
 
 interface DicomViewerProps {
-  imageUrls: string[];
-  /** Called when the user clicks "📥 Mediciones" (Import measurements) — provides parsed annotations */
+  imageUrls:    string[];
+  studyId?:     string;   // used for viewer-state persistence
+  /** imageUrls indexed by sopInstanceUid — enables "navigate to image" from report */
+  sopIndexMap?: Record<string, number>;
+  /** Called when the user clicks "📥 Mediciones" */
   onImportMeasurements?: (measurements: ViewerMeasurement[]) => void;
 }
 
@@ -124,10 +156,75 @@ const ALL_TOOL_CLASSES = Object.values(TOOL_CLASS_MAP);
 
 const VIEWPORT_ID = 'dicom-vp';
 
-export function DicomViewer({ imageUrls, onImportMeasurements }: DicomViewerProps) {
+/** Auto-save interval for viewer state (ms) */
+const VIEWER_STATE_AUTOSAVE_MS = 15_000;
+
+// ─── Helper: parse SOPInstanceUID from a WADO URI ─────────────────────────────
+// WADO URI format: wadouri:http://host/files/dicom/{studyId}/{fileName}
+// The SOPInstanceUID is stored per-image in CornerstoneJS metaData provider.
+function parseSopFromImageId(imageId: string): string | undefined {
+  try {
+    // CornerstoneJS stores metadata accessible via metaData.get
+    const meta = (cornerstone as any).metaData?.get('generalImageModule', imageId);
+    if (meta?.sopInstanceUID) return meta.sopInstanceUID;
+    const imgMeta = (cornerstone as any).metaData?.get('imagePixelModule', imageId);
+    if (imgMeta?.sopInstanceUID) return imgMeta.sopInstanceUID;
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// ─── Helper: extract coordinates from CornerstoneJS annotation handles ────────
+function extractCoordinates(ann: any): Array<{ x: number; y: number }> | undefined {
+  try {
+    const handles = ann?.data?.handles;
+    if (!handles) return undefined;
+    const pts: Array<{ x: number; y: number }> = [];
+
+    // Line / Length / Bidirectional
+    if (handles.points && Array.isArray(handles.points)) {
+      for (const pt of handles.points) {
+        if (pt && typeof pt.x === 'number' && typeof pt.y === 'number') {
+          pts.push({ x: Math.round(pt.x), y: Math.round(pt.y) });
+        }
+      }
+    }
+    // Angle has start/middle/end
+    if (handles.start) pts.push({ x: Math.round(handles.start.x), y: Math.round(handles.start.y) });
+    if (handles.middle) pts.push({ x: Math.round(handles.middle.x), y: Math.round(handles.middle.y) });
+    if (handles.end) pts.push({ x: Math.round(handles.end.x), y: Math.round(handles.end.y) });
+
+    return pts.length ? pts : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// ─── Helper: extract extra stats from cachedStats ─────────────────────────────
+function extractExtraStats(ann: any): Record<string, number> | undefined {
+  try {
+    const stats = Object.values(ann?.data?.cachedStats ?? {});
+    if (!stats.length) return undefined;
+    const merged: Record<string, number> = {};
+    for (const s of stats) {
+      for (const [k, v] of Object.entries(s as any)) {
+        if (v != null && isFinite(v as number)) merged[k] = v as number;
+      }
+    }
+    return Object.keys(merged).length ? merged : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
+  function DicomViewer({ imageUrls, studyId, sopIndexMap, onImportMeasurements }, ref) {
   const elementRef    = useRef<HTMLDivElement>(null);
   const engineRef     = useRef<cornerstone.RenderingEngine | null>(null);
   const toolGroupRef  = useRef<any>(null);
+  const imageIdsRef   = useRef<string[]>([]);
+  const autosaveTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const [currentIndex, setCurrentIndex] = useState(0);
   const [totalFrames,  setTotalFrames]  = useState(0);
@@ -227,6 +324,121 @@ export function DicomViewer({ imageUrls, onImportMeasurements }: DicomViewerProp
     } catch {}
   }, [getViewport]);
 
+  // ── Save viewer state to backend ─────────────────────────────────────────────
+  const saveViewerState = useCallback(async () => {
+    if (!studyId || !engineRef.current) return;
+    try {
+      const vp = engineRef.current.getViewport(VIEWPORT_ID) as any;
+      const props = vp?.getProperties?.() ?? {};
+      const camera = vp?.getCamera?.() ?? {};
+
+      const annotationState = (csTools as any).annotation?.state;
+      const snapshot = typeof annotationState?.getAllAnnotations === 'function'
+        ? annotationState.getAllAnnotations()
+        : undefined;
+
+      await api.put(`/viewer/${studyId}/state`, {
+        windowWidth:  props.voiRange ? Math.round(props.voiRange.upper - props.voiRange.lower) : currentWW,
+        windowCenter: props.voiRange ? Math.round((props.voiRange.upper + props.voiRange.lower) / 2) : currentWL,
+        zoom:         camera.parallelScale ?? null,
+        panX:         camera.focalPoint?.[0] ?? null,
+        panY:         camera.focalPoint?.[1] ?? null,
+        rotation,
+        isInverted,
+        frameIndex:   currentIndex,
+        activeTool,
+        annotationSnapshot: snapshot
+      });
+    } catch {
+      // Non-fatal: viewer state save failure should not block the user
+    }
+  }, [studyId, currentIndex, activeTool, rotation, isInverted, currentWW, currentWL]);
+
+  // ── Restore viewer state from backend ────────────────────────────────────────
+  const restoreViewerState = useCallback(async () => {
+    if (!studyId || !engineRef.current) return;
+    try {
+      const { data, status } = await api.get(`/viewer/${studyId}/state`);
+      if (status === 204 || !data) return; // no saved state
+
+      const vp = engineRef.current.getViewport(VIEWPORT_ID) as any;
+      if (!vp) return;
+
+      // Restore viewport properties
+      if (data.windowWidth != null && data.windowCenter != null) {
+        const ww = data.windowWidth;
+        const wc = data.windowCenter;
+        vp.setProperties({ voiRange: { lower: wc - ww / 2, upper: wc + ww / 2 } });
+        setCurrentWW(ww);
+        setCurrentWL(wc);
+      }
+      if (data.rotation != null && data.rotation !== 0) {
+        vp.setProperties({ rotation: data.rotation });
+        setRotation(data.rotation);
+      }
+      if (data.isInverted) {
+        vp.setProperties({ invert: true });
+        setIsInverted(true);
+      }
+      if (data.frameIndex != null && data.frameIndex > 0) {
+        await vp.setImageIdIndex(data.frameIndex);
+        setCurrentIndex(data.frameIndex);
+      }
+
+      // Restore annotations
+      if (data.annotationSnapshot) {
+        const annotationState = (csTools as any).annotation?.state;
+        if (typeof annotationState?.restoreAnnotations === 'function') {
+          annotationState.restoreAnnotations(data.annotationSnapshot);
+        }
+      }
+
+      // Restore active tool
+      if (data.activeTool && TOOL_CLASS_MAP[data.activeTool as ToolName]) {
+        activateTool(data.activeTool as ToolName);
+      }
+
+      vp.render();
+    } catch {
+      // Non-fatal: state restoration failure should not block reading
+    }
+  }, [studyId, activateTool]);
+
+  // ── Expose imperative handle for StudyDetailPage ──────────────────────────────
+  useImperativeHandle(ref, () => ({
+    navigateToFrame: async (frameIndex: number) => {
+      if (!engineRef.current) return;
+      try {
+        const vp = engineRef.current.getViewport(VIEWPORT_ID) as any;
+        if (frameIndex >= 0 && frameIndex < imageIdsRef.current.length) {
+          await vp.setImageIdIndex(frameIndex);
+          vp.render();
+          setCurrentIndex(frameIndex);
+        }
+      } catch {}
+    },
+    navigateToSopInstance: async (sopInstanceUid: string, frameIndex?: number) => {
+      if (!engineRef.current) return;
+      // Find the index in imageIds that corresponds to this SOPInstanceUID
+      if (sopIndexMap && sopIndexMap[sopInstanceUid] !== undefined) {
+        const idx = sopIndexMap[sopInstanceUid];
+        try {
+          const vp = engineRef.current.getViewport(VIEWPORT_ID) as any;
+          await vp.setImageIdIndex(idx);
+          vp.render();
+          setCurrentIndex(idx);
+        } catch {}
+      } else if (frameIndex != null) {
+        try {
+          const vp = engineRef.current.getViewport(VIEWPORT_ID) as any;
+          await vp.setImageIdIndex(frameIndex);
+          vp.render();
+          setCurrentIndex(frameIndex);
+        } catch {}
+      }
+    }
+  }), [sopIndexMap]);
+
   // ── Export current frame as PNG ──────────────────────────────────────────────
   const handleExportPng = useCallback(() => {
     // CornerstoneJS renders onto a <canvas> inside elementRef
@@ -241,23 +453,69 @@ export function DicomViewer({ imageUrls, onImportMeasurements }: DicomViewerProp
     } catch {}
   }, []);
 
-  // ── Extract annotation measurements and pass to parent ───────────────────────
+  // ── Extract annotation measurements with full traceability ───────────────────
   const handleImportMeasurements = useCallback(() => {
     if (!onImportMeasurements) return;
     try {
-      // @cornerstonejs/tools v3: annotation state is accessible via
-      // csTools.annotation.state.getAllAnnotations() which returns an
-      // AnnotationState object indexed by toolName → array of annotations.
       const annotationState = (csTools as any).annotation?.state;
       if (!annotationState) { onImportMeasurements([]); return; }
 
-      // Try getAllAnnotations (tool-keyed map) or fall back to empty
       const allRaw: Record<string, any[]> =
         typeof annotationState.getAllAnnotations === 'function'
           ? annotationState.getAllAnnotations()
           : {};
 
       const imported: ViewerMeasurement[] = [];
+
+      const buildMeasurement = (
+        toolKey: string,
+        ann: any,
+        type: string,
+        label: string,
+        value: number | null,
+        unit: string
+      ): ViewerMeasurement | null => {
+        if (value == null) return null;
+
+        // Extract primary evidence references from CornerstoneJS annotation metadata
+        const referencedImageId: string | undefined = ann?.metadata?.referencedImageId;
+        const sopInstanceUid = referencedImageId
+          ? parseSopFromImageId(referencedImageId)
+          : undefined;
+        const frameOfReferenceUid: string | undefined = ann?.metadata?.FrameOfReferenceUID;
+
+        // Extract geometry
+        const coords = extractCoordinates(ann);
+
+        // Extract extra statistics
+        const extraStats = extractExtraStats(ann);
+
+        // Get image dimensions from viewport
+        let imageWidth: number | undefined;
+        let imageHeight: number | undefined;
+        try {
+          if (engineRef.current) {
+            const vp = engineRef.current.getViewport(VIEWPORT_ID) as any;
+            const img = vp?.getCornerstoneImage?.();
+            if (img) { imageWidth = img.width; imageHeight = img.height; }
+          }
+        } catch {}
+
+        return {
+          type,
+          label,
+          value:     parseFloat(value.toFixed(3)),
+          unit,
+          toolName:  toolKey,
+          sopInstanceUid,
+          frameOfReferenceUid,
+          frameIndex: currentIndex,
+          coordinatesJson: coords,
+          imageWidth,
+          imageHeight,
+          extraStatsJson: extraStats
+        };
+      };
 
       const extractStat = (ann: any, key: string): number | null => {
         const stats = Object.values(ann?.data?.cachedStats ?? {});
@@ -272,9 +530,8 @@ export function DicomViewer({ imageUrls, onImportMeasurements }: DicomViewerProp
       for (const toolKey of ['Length', 'LengthTool', 'Bidirectional', 'BidirectionalTool']) {
         for (const ann of (allRaw[toolKey] ?? [])) {
           const len = extractStat(ann, 'length');
-          if (len != null) {
-            imported.push({ type: 'LINEAR', label: toolKey.replace('Tool', ''), value: parseFloat(len.toFixed(2)), unit: 'mm' });
-          }
+          const m = buildMeasurement(toolKey, ann, 'LINEAR', toolKey.replace('Tool', ''), len, 'mm');
+          if (m) imported.push(m);
         }
       }
 
@@ -282,20 +539,27 @@ export function DicomViewer({ imageUrls, onImportMeasurements }: DicomViewerProp
       for (const toolKey of ['Angle', 'AngleTool']) {
         for (const ann of (allRaw[toolKey] ?? [])) {
           const deg = extractStat(ann, 'angle');
-          if (deg != null) {
-            imported.push({ type: 'ANGLE', label: 'Ángulo', value: parseFloat(deg.toFixed(1)), unit: '°' });
-          }
+          const m = buildMeasurement(toolKey, ann, 'ANGLE', 'Ángulo', deg, '°');
+          if (m) imported.push(m);
         }
       }
 
-      // ROI → mean HU
+      // ROI → mean HU + full stats
       for (const toolKey of ['EllipticalROI', 'EllipticalROITool', 'RectangleROI', 'RectangleROITool']) {
         for (const ann of (allRaw[toolKey] ?? [])) {
           const mean = extractStat(ann, 'mean');
-          if (mean != null) {
-            const label = toolKey.replace('Tool', '').replace('Elliptical', 'ROI Elíptica').replace('Rectangle', 'ROI Rect.');
-            imported.push({ type: 'ROI', label, value: parseFloat(mean.toFixed(1)), unit: 'HU' });
-          }
+          const label = toolKey.replace('Tool', '').replace('Elliptical', 'ROI Elíptica').replace('Rectangle', 'ROI Rect.');
+          const m = buildMeasurement(toolKey, ann, 'ROI', label, mean, 'HU');
+          if (m) imported.push(m);
+        }
+      }
+
+      // Probe → single pixel HU
+      for (const toolKey of ['Probe', 'ProbeTool']) {
+        for (const ann of (allRaw[toolKey] ?? [])) {
+          const val = extractStat(ann, 'value') ?? extractStat(ann, 'huValue');
+          const m = buildMeasurement(toolKey, ann, 'PROBE', 'Sonda HU', val, 'HU');
+          if (m) imported.push(m);
         }
       }
 
@@ -303,7 +567,7 @@ export function DicomViewer({ imageUrls, onImportMeasurements }: DicomViewerProp
     } catch {
       onImportMeasurements([]);
     }
-  }, [onImportMeasurements]);
+  }, [onImportMeasurements, currentIndex]);
 
   // ── Main initialization effect ───────────────────────────────────────────────
   useEffect(() => {
@@ -365,6 +629,7 @@ export function DicomViewer({ imageUrls, onImportMeasurements }: DicomViewerProp
 
         // ── Load images ──────────────────────────────────────────────────────
         const imageIds = imageUrls.map((u) => `wadouri:${u}`);
+        imageIdsRef.current = imageIds;
         const vp = renderingEngine.getViewport(VIEWPORT_ID) as any;
         await vp.setStack(imageIds, 0);
 
@@ -378,6 +643,12 @@ export function DicomViewer({ imageUrls, onImportMeasurements }: DicomViewerProp
         setCurrentWW(null);
         setCurrentWL(null);
         setReady(true);
+
+        // ── Restore saved state after viewer is ready ────────────────────────
+        if (studyId) {
+          // Small delay to let the viewport settle before restoring
+          setTimeout(() => { if (!cancelled) restoreViewerState(); }, 400);
+        }
       } catch (err) {
         if (cancelled) return;
         console.error('[DicomViewer]', err);
@@ -390,6 +661,12 @@ export function DicomViewer({ imageUrls, onImportMeasurements }: DicomViewerProp
     // ── Cleanup ──────────────────────────────────────────────────────────────
     return () => {
       cancelled = true;
+
+      // Stop autosave timer
+      if (autosaveTimer.current) {
+        clearInterval(autosaveTimer.current);
+        autosaveTimer.current = null;
+      }
 
       try {
         if (localToolGroup) {
@@ -411,7 +688,21 @@ export function DicomViewer({ imageUrls, onImportMeasurements }: DicomViewerProp
       setReady(false);
       setError('');
     };
+  // restoreViewerState is memoized with studyId — stable during a study session
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [imageUrls]);
+
+  // ── Autosave viewer state every VIEWER_STATE_AUTOSAVE_MS when ready ──────────
+  useEffect(() => {
+    if (!ready || !studyId) return;
+    autosaveTimer.current = setInterval(saveViewerState, VIEWER_STATE_AUTOSAVE_MS);
+    return () => {
+      if (autosaveTimer.current) {
+        clearInterval(autosaveTimer.current);
+        autosaveTimer.current = null;
+      }
+    };
+  }, [ready, studyId, saveViewerState]);
 
   // ── Mouse wheel frame navigation ─────────────────────────────────────────────
   useEffect(() => {
@@ -588,4 +879,4 @@ export function DicomViewer({ imageUrls, onImportMeasurements }: DicomViewerProp
       )}
     </div>
   );
-}
+});

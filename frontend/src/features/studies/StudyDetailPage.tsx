@@ -1,31 +1,71 @@
-import { useEffect, useState, useCallback, useMemo } from 'react';
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { AppLayout } from '../../components/AppLayout';
 import { api, getFilesBaseUrl } from '../../lib/api';
 import { getAccessToken } from '../../lib/auth';
-import { DicomViewer, ViewerMeasurement } from './DicomViewer';
+import { DicomViewer, ViewerMeasurement, DicomViewerHandle } from './DicomViewer';
 import { useAuth } from '../../lib/auth';
 import { RichTextEditor } from '../../components/RichTextEditor';
 
 interface Measurement {
   id?: string;
-  type: string;
-  label: string;
-  value: number;
-  unit: string;
+  type:    string;
+  label:   string;
+  value:   number;
+  unit:    string;
+  toolName?: string;
+  // Primary evidence references
+  sopInstanceUid?:      string;
+  seriesInstanceUid?:   string;
+  studyInstanceUid?:    string;
+  frameOfReferenceUid?: string;
+  instanceNumber?:      number;
+  frameIndex?:          number;
+  // Geometry
+  coordinatesJson?:  Array<{ x: number; y: number }>;
+  imageWidth?:       number;
+  imageHeight?:      number;
+  extraStatsJson?:   Record<string, number>;
+}
+
+interface KeyImage {
+  id:             string;
+  sopInstanceUid: string;
+  instanceNumber?: number;
+  frameIndex?:    number;
+  description?:   string;
+}
+
+interface AiSession {
+  requestedAt:  string;
+  model:        string;
+  section:      string;
+  action:       'accepted' | 'modified' | 'discarded';
+  editedByUser?: boolean;
 }
 
 interface Report {
-  id: string;
-  status: string;
-  findings: string;
-  conclusion: string;
+  id:             string;
+  status:         string;
+  findings:       string;
+  conclusion:     string;
   patientSummary?: string;
-  measurements: Measurement[];
-  finalizedAt?: string;
-  pdfPath?: string;
-  doctor: { firstName: string; lastName: string };
+  measurements:   Measurement[];
+  keyImages?:     KeyImage[];
+  finalizedAt?:   string;
+  pdfPath?:       string;
+  doctor:         { firstName: string; lastName: string };
+  // Versioning
+  versionNumber?: number;
+  isAddendum?:    boolean;
+  addendumReason?: string;
+  parentReportId?: string;
+  childReports?:  Array<{ id: string; versionNumber: number; isAddendum: boolean; status: string }>;
+  // AI attribution
+  aiUsed?:        boolean;
+  aiModel?:       string;
+  aiSessions?:    AiSession[];
 }
 
 interface ReportTemplate {
@@ -49,9 +89,10 @@ interface Study {
     documentId: string; cuil?: string; dateOfBirth: string; sex: string;
     healthInsurance?: string; healthInsurancePlan?: string; healthInsuranceMemberId?: string;
   };
-  dicomFiles: Array<{ id: string; fileName: string; filePath: string }>;
+  dicomFiles: Array<{ id: string; fileName: string; filePath: string; sopInstanceUid?: string; instanceNumber?: number }>;
   reports: Report[];
   assignedDoctor?: { firstName: string; lastName: string } | null;
+  series?: Array<{ id: string; seriesInstanceUid: string }>;
 }
 
 export function StudyDetailPage() {
@@ -60,6 +101,7 @@ export function StudyDetailPage() {
   const [study,   setStudy]   = useState<Study | null>(null);
   const [loading, setLoading] = useState(true);
   const [report,  setReport]  = useState<Report | null>(null);
+  const viewerRef = useRef<DicomViewerHandle>(null);
 
   // Form state
   const [findings,       setFindings]       = useState('');
@@ -69,6 +111,20 @@ export function StudyDetailPage() {
   const [newMeasLabel,   setNewMeasLabel]   = useState('');
   const [newMeasValue,   setNewMeasValue]   = useState('');
   const [newMeasUnit,    setNewMeasUnit]    = useState('mm');
+
+  // AI attribution tracking
+  const [aiSessions,     setAiSessions]     = useState<AiSession[]>([]);
+  const [aiUsed,         setAiUsed]         = useState(false);
+  const [aiModel,        setAiModel]        = useState<string | undefined>();
+
+  // Addendum state
+  const [showAddendumModal, setShowAddendumModal] = useState(false);
+  const [addendumReason,    setAddendumReason]    = useState('');
+  const [creatingAddendum,  setCreatingAddendum]  = useState(false);
+
+  // Key images
+  const [keyImages,     setKeyImages]     = useState<KeyImage[]>([]);
+  const [showKeyImages, setShowKeyImages] = useState(false);
 
   // UI state
   const [saving,              setSaving]              = useState(false);
@@ -99,6 +155,10 @@ export function StudyDetailPage() {
         setConclusion(r.conclusion || '');
         setPatientSummary(r.patientSummary || '');
         setMeasurements(r.measurements || []);
+        setKeyImages(r.keyImages || []);
+        setAiUsed(r.aiUsed ?? false);
+        setAiModel(r.aiModel ?? undefined);
+        setAiSessions((r.aiSessions as AiSession[]) ?? []);
       }
     } catch {
       setMessage({ type: 'error', text: 'Error al cargar el estudio' });
@@ -108,6 +168,14 @@ export function StudyDetailPage() {
   }, [id]);
 
   useEffect(() => { loadStudy(); }, [loadStudy]);
+
+  // Load key images for the study
+  useEffect(() => {
+    if (!study) return;
+    api.get(`/viewer/${study.id}/key-images`)
+      .then((r) => setKeyImages(Array.isArray(r.data) ? r.data : []))
+      .catch(() => {});
+  }, [study]);
 
   // Load report templates filtered by current modality
   useEffect(() => {
@@ -133,7 +201,7 @@ export function StudyDetailPage() {
     setTimeout(() => setMessage(null), 4500);
   };
 
-  // ── PDF download: uses Bearer token (direct <a href> fails → 401) ─────────────
+  // ── PDF download ──────────────────────────────────────────────────────────────
   const openPdf = async () => {
     if (!report?.pdfPath) return;
     setPdfLoading(true);
@@ -147,12 +215,8 @@ export function StudyDetailPage() {
       const url  = URL.createObjectURL(blob);
       const a    = document.createElement('a');
       a.href     = url;
-      // Use download attribute so the PDF saves directly instead of opening in a
-      // new tab. This avoids the blank-tab problem when the blob URL is revoked
-      // before the browser finishes rendering it.
       a.download = `informe-${report.id.slice(0, 8)}.pdf`;
       a.click();
-      // 1 second is more than enough for the browser to start the download
       setTimeout(() => URL.revokeObjectURL(url), 1_000);
     } catch {
       showMessage('error', 'No se pudo descargar el PDF. Verifique que el servidor esté activo.');
@@ -161,13 +225,24 @@ export function StudyDetailPage() {
     }
   };
 
+  // ── Save draft ────────────────────────────────────────────────────────────────
   const saveDraft = async () => {
     if (!study) return;
     setSaving(true);
     try {
-      const payload = { studyId: study.id, findings, conclusion, patientSummary: patientSummary || undefined, measurements };
+      const payload = {
+        studyId: study.id,
+        findings,
+        conclusion,
+        patientSummary: patientSummary || undefined,
+        measurements,
+        aiUsed,
+        aiModel,
+        aiSessions
+      };
       if (report) {
-        await api.put(`/reports/${report.id}`, payload);
+        const { data } = await api.put(`/reports/${report.id}`, payload);
+        setReport(data);
         showMessage('success', 'Borrador guardado');
       } else {
         const { data } = await api.post('/reports', payload);
@@ -181,6 +256,7 @@ export function StudyDetailPage() {
     }
   };
 
+  // ── Finalize ──────────────────────────────────────────────────────────────────
   const finalize = async () => {
     if (!report) return showMessage('error', 'Primero guarde el borrador');
     if (!findings.trim() || !conclusion.trim()) return showMessage('error', 'Complete hallazgos y conclusión antes de finalizar');
@@ -198,20 +274,59 @@ export function StudyDetailPage() {
     }
   };
 
+  // ── Sign ──────────────────────────────────────────────────────────────────────
   const signReport = async () => {
     if (!report) return;
-    if (!window.confirm('¿Confirma que desea firmar digitalmente este informe? Esta acción es irreversible.')) return;
+    if (!window.confirm('¿Confirma que desea firmar este informe? Esta acción es irreversible.')) return;
     setSigning(true);
     try {
       const { data } = await api.post(`/reports/${report.id}/sign`);
       setReport(data);
-      showMessage('success', '✓ Informe firmado digitalmente.');
+      showMessage('success', '✓ Informe firmado.');
       loadStudy();
     } catch (err: any) {
       showMessage('error', err?.response?.data?.message ?? 'Error al firmar informe');
     } finally {
       setSigning(false);
     }
+  };
+
+  // ── Addendum ──────────────────────────────────────────────────────────────────
+  const createAddendum = async () => {
+    if (!report || !addendumReason.trim()) return;
+    setCreatingAddendum(true);
+    try {
+      const { data } = await api.post(`/reports/${report.id}/addendum`, {
+        findings:      findings || report.findings,
+        conclusion:    conclusion || report.conclusion,
+        patientSummary: patientSummary || undefined,
+        addendumReason,
+        measurements,
+        aiUsed,
+        aiModel,
+        aiSessions
+      });
+      setReport(data);
+      setFindings(data.findings);
+      setConclusion(data.conclusion);
+      setMeasurements(data.measurements || []);
+      setShowAddendumModal(false);
+      setAddendumReason('');
+      showMessage('success', `✓ Addendum v${data.versionNumber} creado.`);
+      loadStudy();
+    } catch (err: any) {
+      showMessage('error', err?.response?.data?.message ?? 'Error al crear addendum');
+    } finally {
+      setCreatingAddendum(false);
+    }
+  };
+
+  // ── AI tools ──────────────────────────────────────────────────────────────────
+  const recordAiSession = (section: AiSession['section'], action: AiSession['action'], model: string) => {
+    const session: AiSession = { requestedAt: new Date().toISOString(), model, section, action };
+    setAiSessions((prev) => [...prev, session]);
+    setAiUsed(true);
+    setAiModel(model);
   };
 
   const suggestAI = async () => {
@@ -223,6 +338,7 @@ export function StudyDetailPage() {
       setConclusion(data.conclusion);
       setAiDisclaimer(data.disclaimer);
       setShowAiPanel(true);
+      recordAiSession('findings', 'accepted', data.model ?? 'unknown');
     } catch {
       showMessage('error', 'Error al obtener sugerencia de IA');
     } finally {
@@ -236,6 +352,7 @@ export function StudyDetailPage() {
     try {
       const { data } = await api.post('/ai/patient-summary', { conclusion });
       setPatientSummary(data.patientSummary);
+      recordAiSession('patientSummary', 'accepted', data.model ?? 'unknown');
     } catch {
       showMessage('error', 'Error al generar resumen para paciente');
     } finally {
@@ -250,6 +367,7 @@ export function StudyDetailPage() {
       const { data } = await api.post('/ai/check-consistency', { findings, conclusion, modality: study?.modality });
       setWarnings(data.warnings);
       setShowAiPanel(true);
+      recordAiSession('consistency', 'accepted', data.model ?? 'unknown');
     } catch {
       showMessage('error', 'Error al revisar consistencia');
     } finally {
@@ -257,6 +375,7 @@ export function StudyDetailPage() {
     }
   };
 
+  // ── Measurements ──────────────────────────────────────────────────────────────
   const addMeasurement = () => {
     if (!newMeasLabel || !newMeasValue) return;
     setMeasurements((prev) => [...prev, { type: 'LINEAR', label: newMeasLabel, value: Number(newMeasValue), unit: newMeasUnit }]);
@@ -265,38 +384,58 @@ export function StudyDetailPage() {
 
   const removeMeasurement = (i: number) => setMeasurements((prev) => prev.filter((_, idx) => idx !== i));
 
-  // Import measurements extracted from CornerstoneJS annotations in the DICOM viewer
+  // Import measurements from CornerstoneJS annotations — includes full traceability
   const handleImportViewerMeasurements = useCallback((imported: ViewerMeasurement[]) => {
     if (!imported.length) {
       showMessage('error', 'No se encontraron mediciones en el visor. Use las herramientas de medición primero.');
       return;
     }
     setMeasurements((prev) => {
-      // Deduplicate by label + value combination
       const existing = new Set(prev.map((m) => `${m.label}:${m.value}:${m.unit}`));
       const newOnes = imported.filter((m) => !existing.has(`${m.label}:${m.value}:${m.unit}`));
       return [...prev, ...newOnes];
     });
     const n = imported.length;
-    const plural = n !== 1;
-    showMessage('success', `${n} medición${plural ? 'es' : ''} importada${plural ? 's' : ''} del visor`);
+    showMessage('success', `${n} medición${n !== 1 ? 'es' : ''} importada${n !== 1 ? 's' : ''} del visor`);
+  }, []);
+
+  // Navigate from a measurement back to the image in the viewer
+  const navigateToMeasurement = useCallback((m: Measurement) => {
+    if (!viewerRef.current) return;
+    if (m.sopInstanceUid) {
+      viewerRef.current.navigateToSopInstance(
+        m.sopInstanceUid,
+        m.frameIndex ?? (m.instanceNumber != null ? m.instanceNumber - 1 : 0)
+      );
+    } else if (m.frameIndex != null) {
+      viewerRef.current.navigateToFrame(m.frameIndex);
+    } else if (m.instanceNumber != null) {
+      viewerRef.current.navigateToFrame(m.instanceNumber - 1);
+    }
+  }, []);
+
+  // Navigate to a key image in the viewer
+  const navigateToKeyImage = useCallback((ki: KeyImage) => {
+    if (!viewerRef.current) return;
+    viewerRef.current.navigateToSopInstance(ki.sopInstanceUid, ki.frameIndex ?? (ki.instanceNumber != null ? ki.instanceNumber - 1 : 0));
   }, []);
 
   const filesBase = getFilesBaseUrl();
 
-  // IMPORTANT: useMemo so the array reference is STABLE between re-renders.
-  // DicomViewer's useEffect depends on [imageUrls].  Without memoization,
-  // every state update in this page (typing in a textarea, saving, etc.)
-  // causes a new array to be created, which triggers a new effect run in
-  // DicomViewer — destroying and re-creating the WebGL context repeatedly,
-  // causing "too many WebGL contexts" and stuck-loading symptoms.
+  const sopIndexMap = useMemo((): Record<string, number> => {
+    if (!study?.dicomFiles) return {};
+    const map: Record<string, number> = {};
+    study.dicomFiles.forEach((f, i) => {
+      if (f.sopInstanceUid) map[f.sopInstanceUid] = i;
+    });
+    return map;
+  }, [study?.dicomFiles]);
+
   const dicomUrls = useMemo(
     () =>
       study?.dicomFiles
-        // Filter DICOMDIR — it's a directory index with no pixel data
         .filter((f) => f.fileName.toUpperCase() !== 'DICOMDIR')
         .map((f) => `${filesBase}/dicom/${study.id}/${f.fileName}`) ?? [],
-    // Only recompute when the study's file list actually changes
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [study?.id, study?.dicomFiles?.length]
   );
@@ -354,7 +493,10 @@ export function StudyDetailPage() {
           flexDirection: 'column'
         }}>
           <DicomViewer
+            ref={viewerRef}
             imageUrls={dicomUrls}
+            studyId={study.id}
+            sopIndexMap={sopIndexMap}
             onImportMeasurements={!isFinalized ? handleImportViewerMeasurements : undefined}
           />
         </div>
@@ -502,10 +644,51 @@ export function StudyDetailPage() {
                     onClick={signReport}
                     disabled={signing}
                     style={{ width: '100%', justifyContent: 'center', gap: 8 }}
-                    title="Firmar digitalmente el informe"
+                    title="Firmar el informe"
                   >
-                    {signing ? '⏳ Firmando...' : '✍ Firmar informe digitalmente'}
+                    {signing ? '⏳ Firmando...' : '✍ Firmar informe'}
                   </button>
+                )}
+
+                {/* Addendum button — only for SIGNED reports */}
+                {report?.status === 'SIGNED' && (
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => setShowAddendumModal(true)}
+                    style={{ width: '100%', justifyContent: 'center', gap: 8, borderColor: '#f59e0b', color: '#92400e' }}
+                    title="Crear addendum sobre informe firmado"
+                  >
+                    ✏ Crear addendum (corrección)
+                  </button>
+                )}
+
+                {/* Version history */}
+                {report?.versionNumber != null && report.versionNumber > 1 && (
+                  <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, padding: '8px 12px', fontSize: 12 }}>
+                    <strong>Versión {report.versionNumber}</strong>
+                    {report.isAddendum && report.addendumReason && (
+                      <div style={{ color: '#92400e', marginTop: 4 }}>Motivo: {report.addendumReason}</div>
+                    )}
+                  </div>
+                )}
+
+                {/* Key images section */}
+                {keyImages.length > 0 && (
+                  <ReportSection title="IMÁGENES CLAVE">
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      {keyImages.map((ki) => (
+                        <div key={ki.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+                          <button
+                            className="btn btn-ghost btn-sm"
+                            onClick={() => navigateToKeyImage(ki)}
+                            style={{ padding: '2px 6px', fontSize: 11 }}
+                            title="Navegar a imagen clave"
+                          >🖼 {ki.instanceNumber != null ? `Im. ${ki.instanceNumber}` : ki.sopInstanceUid.slice(0, 12)}</button>
+                          {ki.description && <span style={{ color: 'var(--gray-500)' }}>{ki.description}</span>}
+                        </div>
+                      ))}
+                    </div>
+                  </ReportSection>
                 )}
 
                 {/* Report content — read only */}
@@ -531,10 +714,29 @@ export function StudyDetailPage() {
 
                 {(report?.measurements?.length ?? 0) > 0 && (
                   <ReportSection title="MEDICIONES">
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                       {report!.measurements.map((m, i) => (
-                        <div key={i} style={{ fontSize: 13, color: 'var(--gray-700)' }}>
-                          • <strong>{m.label}:</strong> {m.value} {m.unit}
+                        <div key={i} style={{ fontSize: 13, color: 'var(--gray-700)', display: 'flex', flexDirection: 'column', gap: 2 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            • <strong>{m.label}:</strong> {m.value} {m.unit}
+                            {(m.sopInstanceUid || m.frameIndex != null || m.instanceNumber != null) && (
+                              <button
+                                className="btn btn-ghost btn-sm"
+                                onClick={() => navigateToMeasurement(m)}
+                                title="Navegar a imagen de origen"
+                                style={{ fontSize: 11, padding: '1px 6px', marginLeft: 4 }}
+                              >
+                                🔗 Ver
+                              </button>
+                            )}
+                          </div>
+                          {m.sopInstanceUid && (
+                            <div style={{ fontSize: 10, color: 'var(--gray-400)', paddingLeft: 12 }}>
+                              SOP: {m.sopInstanceUid.slice(0, 24)}…
+                              {m.instanceNumber != null && ` · Im. ${m.instanceNumber}`}
+                              {m.frameIndex != null && ` / frame ${m.frameIndex}`}
+                            </div>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -666,18 +868,35 @@ export function StudyDetailPage() {
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 8 }}>
                       {measurements.map((m, i) => (
                         <div key={i} style={{
-                          display: 'flex', alignItems: 'center', gap: 8,
+                          display: 'flex', flexDirection: 'column',
                           background: 'var(--gray-50)', borderRadius: 6,
-                          padding: '6px 10px', fontSize: 12
+                          padding: '6px 10px', fontSize: 12, gap: 2
                         }}>
-                          <span style={{ flex: 1, color: 'var(--gray-700)' }}>
-                            {m.label}: <strong>{m.value} {m.unit}</strong>
-                          </span>
-                          <button
-                            className="btn btn-ghost btn-sm btn-icon"
-                            onClick={() => removeMeasurement(i)}
-                            style={{ padding: '2px 6px', fontSize: 11 }}
-                          >✕</button>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <span style={{ flex: 1, color: 'var(--gray-700)' }}>
+                              {m.label}: <strong>{m.value} {m.unit}</strong>
+                              {m.toolName && <span style={{ marginLeft: 6, color: 'var(--gray-400)', fontSize: 10 }}>[{m.toolName}]</span>}
+                            </span>
+                            {(m.sopInstanceUid || m.frameIndex != null || m.instanceNumber != null) && (
+                              <button
+                                className="btn btn-ghost btn-sm"
+                                onClick={() => navigateToMeasurement(m)}
+                                title="Navegar a imagen de origen"
+                                style={{ padding: '1px 6px', fontSize: 10 }}
+                              >🔗</button>
+                            )}
+                            <button
+                              className="btn btn-ghost btn-sm btn-icon"
+                              onClick={() => removeMeasurement(i)}
+                              style={{ padding: '2px 6px', fontSize: 11 }}
+                            >✕</button>
+                          </div>
+                          {m.sopInstanceUid && (
+                            <div style={{ fontSize: 10, color: 'var(--gray-400)' }}>
+                              SOP: {m.sopInstanceUid.slice(0, 20)}…
+                              {m.instanceNumber != null && ` · Im. ${m.instanceNumber}`}
+                            </div>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -804,10 +1023,11 @@ export function StudyDetailPage() {
               gap: 8
             }}>
               {/* Character counts */}
-              <div style={{ display: 'flex', gap: 12, fontSize: 11, color: 'var(--gray-400)' }}>
+              <div style={{ display: 'flex', gap: 12, fontSize: 11, color: 'var(--gray-400)', flexWrap: 'wrap' }}>
                 <span>Hallazgos: {findings.length} car.</span>
                 <span>Conclusión: {conclusion.length} car.</span>
-                {report && <span style={{ color: '#f59e0b' }}>Estado: Borrador</span>}
+                {report && <span style={{ color: '#f59e0b' }}>Estado: {report.isAddendum ? `Addendum v${report.versionNumber}` : 'Borrador'}</span>}
+                {aiUsed && <span style={{ color: '#7c3aed', fontSize: 10 }}>✦ IA usada ({aiSessions.length} sesión{aiSessions.length !== 1 ? 'es' : ''})</span>}
               </div>
 
               <div style={{ display: 'flex', gap: 8 }}>
@@ -840,6 +1060,53 @@ export function StudyDetailPage() {
 
         </div>{/* end right panel */}
       </div>
+
+      {/* ── Addendum modal ─────────────────────────────────────────────────── */}
+      {showAddendumModal && (
+        <div style={{
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000,
+          display: 'flex', alignItems: 'center', justifyContent: 'center'
+        }}>
+          <div style={{
+            background: '#fff', borderRadius: 12, padding: 24, width: 480, maxWidth: '90vw',
+            boxShadow: '0 16px 48px rgba(0,0,0,0.2)'
+          }}>
+            <h3 style={{ margin: '0 0 12px', color: 'var(--gray-800)', fontSize: 16 }}>✏ Crear Addendum</h3>
+            <p style={{ fontSize: 12, color: 'var(--gray-500)', margin: '0 0 16px', lineHeight: 1.5 }}>
+              El informe original firmado se conservará intacto. Se creará un nuevo borrador de addendum
+              (versión {(report?.versionNumber ?? 1) + 1}) que podrá editar, finalizar y firmar por separado.
+            </p>
+            <div className="form-group">
+              <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--gray-600)' }}>
+                Motivo del addendum *
+              </label>
+              <textarea
+                value={addendumReason}
+                onChange={(e) => setAddendumReason(e.target.value)}
+                placeholder="Ej: Error tipográfico en conclusión, medición adicional, corrección de lateralidad..."
+                rows={3}
+                style={{ width: '100%', fontSize: 13, padding: '8px 10px', border: '1.5px solid var(--gray-300)', borderRadius: 8 }}
+              />
+            </div>
+            <div style={{ display: 'flex', gap: 8, marginTop: 16, justifyContent: 'flex-end' }}>
+              <button
+                className="btn btn-ghost"
+                onClick={() => { setShowAddendumModal(false); setAddendumReason(''); }}
+                disabled={creatingAddendum}
+              >
+                Cancelar
+              </button>
+              <button
+                className="btn btn-primary"
+                onClick={createAddendum}
+                disabled={!addendumReason.trim() || creatingAddendum}
+              >
+                {creatingAddendum ? 'Creando...' : 'Crear addendum'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </AppLayout>
   );
 }
