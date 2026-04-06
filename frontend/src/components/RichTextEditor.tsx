@@ -43,6 +43,33 @@ export function RichTextEditor({ value, onChange, placeholder, minHeight = 110, 
     }
   }, [execCmd]);
 
+  // Insert a simple 2×3 table at the current cursor position
+  const insertTable = useCallback(() => {
+    if (disabled) return;
+    const tableHtml =
+      '<table style="width:100%;border-collapse:collapse;margin:6px 0">' +
+      '<thead><tr>' +
+        '<th style="border:1px solid #cbd5e1;padding:4px 8px;background:#f1f5f9;font-size:12px">Parámetro</th>' +
+        '<th style="border:1px solid #cbd5e1;padding:4px 8px;background:#f1f5f9;font-size:12px">Valor</th>' +
+        '<th style="border:1px solid #cbd5e1;padding:4px 8px;background:#f1f5f9;font-size:12px">Referencia</th>' +
+      '</tr></thead>' +
+      '<tbody>' +
+        '<tr>' +
+          '<td style="border:1px solid #cbd5e1;padding:4px 8px;font-size:12px"> </td>' +
+          '<td style="border:1px solid #cbd5e1;padding:4px 8px;font-size:12px"> </td>' +
+          '<td style="border:1px solid #cbd5e1;padding:4px 8px;font-size:12px"> </td>' +
+        '</tr>' +
+        '<tr>' +
+          '<td style="border:1px solid #cbd5e1;padding:4px 8px;font-size:12px"> </td>' +
+          '<td style="border:1px solid #cbd5e1;padding:4px 8px;font-size:12px"> </td>' +
+          '<td style="border:1px solid #cbd5e1;padding:4px 8px;font-size:12px"> </td>' +
+        '</tr>' +
+      '</tbody></table><br>';
+    ref.current?.focus();
+    document.execCommand('insertHTML', false, tableHtml);
+    if (ref.current) onChange(ref.current.innerHTML);
+  }, [disabled, onChange]);
+
   const isEmpty = !value || value === '<br>' || value === '<p><br></p>' || value === '';
 
   return (
@@ -50,7 +77,8 @@ export function RichTextEditor({ value, onChange, placeholder, minHeight = 110, 
       {/* Toolbar */}
       <div style={{
         display: 'flex', gap: 2, padding: '4px 8px',
-        background: 'var(--gray-50)', borderBottom: '1px solid var(--gray-200)'
+        background: 'var(--gray-50)', borderBottom: '1px solid var(--gray-200)',
+        flexWrap: 'wrap'
       }}>
         {[
           { cmd: 'bold',          label: <strong>B</strong>,         title: 'Negrita (Ctrl+B)' },
@@ -77,6 +105,23 @@ export function RichTextEditor({ value, onChange, placeholder, minHeight = 110, 
             {label}
           </button>
         ))}
+        {/* Table button — uses direct DOM insertion, not execCmd */}
+        <button
+          type="button"
+          title="Insertar tabla 3 columnas"
+          disabled={disabled}
+          onMouseDown={(e) => { e.preventDefault(); insertTable(); }}
+          style={{
+            height: 26, padding: '0 6px',
+            background: 'none', border: '1px solid transparent', borderRadius: 3,
+            cursor: 'pointer', fontSize: 11, display: 'flex', alignItems: 'center', justifyContent: 'center',
+            color: 'var(--gray-700)'
+          }}
+          onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'var(--gray-200)'; }}
+          onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'none'; }}
+        >
+          ⊞ Tabla
+        </button>
       </div>
 
       {/* Editable area */}

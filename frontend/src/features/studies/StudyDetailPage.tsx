@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { AppLayout } from '../../components/AppLayout';
 import { api, getFilesBaseUrl } from '../../lib/api';
 import { getAccessToken } from '../../lib/auth';
-import { DicomViewer } from './DicomViewer';
+import { DicomViewer, ViewerMeasurement } from './DicomViewer';
 import { useAuth } from '../../lib/auth';
 import { RichTextEditor } from '../../components/RichTextEditor';
 
@@ -73,6 +73,7 @@ export function StudyDetailPage() {
   // UI state
   const [saving,              setSaving]              = useState(false);
   const [finalizing,          setFinalizing]          = useState(false);
+  const [signing,             setSigning]             = useState(false);
   const [aiLoading,           setAiLoading]           = useState(false);
   const [summaryLoading,      setSummaryLoading]      = useState(false);
   const [consistencyLoading,  setConsistencyLoading]  = useState(false);
@@ -146,10 +147,13 @@ export function StudyDetailPage() {
       const url  = URL.createObjectURL(blob);
       const a    = document.createElement('a');
       a.href     = url;
-      a.target   = '_blank';
-      a.rel      = 'noopener noreferrer';
+      // Use download attribute so the PDF saves directly instead of opening in a
+      // new tab. This avoids the blank-tab problem when the blob URL is revoked
+      // before the browser finishes rendering it.
+      a.download = `informe-${report.id.slice(0, 8)}.pdf`;
       a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 30_000);
+      // 1 second is more than enough for the browser to start the download
+      setTimeout(() => URL.revokeObjectURL(url), 1_000);
     } catch {
       showMessage('error', 'No se pudo descargar el PDF. Verifique que el servidor esté activo.');
     } finally {
@@ -191,6 +195,22 @@ export function StudyDetailPage() {
       showMessage('error', err?.response?.data?.message ?? 'Error al finalizar informe');
     } finally {
       setFinalizing(false);
+    }
+  };
+
+  const signReport = async () => {
+    if (!report) return;
+    if (!window.confirm('¿Confirma que desea firmar digitalmente este informe? Esta acción es irreversible.')) return;
+    setSigning(true);
+    try {
+      const { data } = await api.post(`/reports/${report.id}/sign`);
+      setReport(data);
+      showMessage('success', '✓ Informe firmado digitalmente.');
+      loadStudy();
+    } catch (err: any) {
+      showMessage('error', err?.response?.data?.message ?? 'Error al firmar informe');
+    } finally {
+      setSigning(false);
     }
   };
 
@@ -244,6 +264,21 @@ export function StudyDetailPage() {
   };
 
   const removeMeasurement = (i: number) => setMeasurements((prev) => prev.filter((_, idx) => idx !== i));
+
+  // Import measurements extracted from CornerstoneJS annotations in the DICOM viewer
+  const handleImportViewerMeasurements = useCallback((imported: ViewerMeasurement[]) => {
+    if (!imported.length) {
+      showMessage('error', 'No se encontraron mediciones en el visor. Use las herramientas de medición primero.');
+      return;
+    }
+    setMeasurements((prev) => {
+      // Deduplicate by label + value combination
+      const existing = new Set(prev.map((m) => `${m.label}:${m.value}:${m.unit}`));
+      const newOnes = imported.filter((m) => !existing.has(`${m.label}:${m.value}:${m.unit}`));
+      return [...prev, ...newOnes];
+    });
+    showMessage('success', `${imported.length} medición${imported.length !== 1 ? 'es' : ''} importada${imported.length !== 1 ? 's' : ''} del visor`);
+  }, []);
 
   const filesBase = getFilesBaseUrl();
 
@@ -316,7 +351,10 @@ export function StudyDetailPage() {
           display: 'flex',
           flexDirection: 'column'
         }}>
-          <DicomViewer imageUrls={dicomUrls} />
+          <DicomViewer
+            imageUrls={dicomUrls}
+            onImportMeasurements={!isFinalized ? handleImportViewerMeasurements : undefined}
+          />
         </div>
 
         {/* RIGHT — Report panel */}
@@ -453,6 +491,19 @@ export function StudyDetailPage() {
                   <div className="alert alert-error">
                     <span>⚠</span><span>El PDF no está disponible. Contacte al administrador.</span>
                   </div>
+                )}
+
+                {/* Sign button — only for FINAL (not yet SIGNED) reports */}
+                {report?.status === 'FINAL' && (
+                  <button
+                    className="btn btn-secondary"
+                    onClick={signReport}
+                    disabled={signing}
+                    style={{ width: '100%', justifyContent: 'center', gap: 8 }}
+                    title="Firmar digitalmente el informe"
+                  >
+                    {signing ? '⏳ Firmando...' : '✍ Firmar informe digitalmente'}
+                  </button>
                 )}
 
                 {/* Report content — read only */}

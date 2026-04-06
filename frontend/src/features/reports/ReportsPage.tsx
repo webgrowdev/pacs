@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { AppLayout } from '../../components/AppLayout';
 import { api, getFilesBaseUrl } from '../../lib/api';
+import { getAccessToken } from '../../lib/auth';
 
 interface Report {
   id: string;
@@ -27,6 +28,31 @@ export function ReportsPage() {
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState('');
   const [selected, setSelected] = useState<Report | null>(null);
+  const [pdfLoadingId, setPdfLoadingId] = useState<string | null>(null);
+
+  // Authenticated PDF download (bare <a href> would return 401 for protected files)
+  const openPdf = useCallback(async (report: Report) => {
+    if (!report.pdfPath) return;
+    setPdfLoadingId(report.id);
+    try {
+      const token = getAccessToken();
+      const response = await fetch(`${getFilesBaseUrl()}/${report.pdfPath}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const blob = await response.blob();
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      a.href     = url;
+      a.download = `informe-${report.id.slice(0, 8)}.pdf`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1_000);
+    } catch {
+      alert('No se pudo descargar el PDF. Verifique que el servidor esté activo.');
+    } finally {
+      setPdfLoadingId(null);
+    }
+  }, []);
 
   useEffect(() => {
     api.get('/reports', { params: { limit: 100 } })
@@ -107,15 +133,13 @@ export function ReportsPage() {
                     <td className="text-sm text-muted">{r.finalizedAt ? formatDate(r.finalizedAt) : '—'}</td>
                     <td>
                       {r.pdfPath ? (
-                        <a
-                          href={`${getFilesBaseUrl()}/${r.pdfPath}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
+                        <button
                           className="btn btn-ghost btn-sm"
-                          onClick={(e) => e.stopPropagation()}
+                          onClick={(e) => { e.stopPropagation(); openPdf(r); }}
+                          disabled={pdfLoadingId === r.id}
                         >
-                          📄 PDF
-                        </a>
+                          {pdfLoadingId === r.id ? '⏳' : '📄'} PDF
+                        </button>
                       ) : (
                         <span className="text-xs text-muted">—</span>
                       )}
@@ -186,9 +210,13 @@ export function ReportsPage() {
                   Abrir estudio y visor
                 </Link>
                 {selected.pdfPath && (
-                  <a href={`${getFilesBaseUrl()}/${selected.pdfPath}`} target="_blank" rel="noopener noreferrer" className="btn btn-secondary btn-sm">
-                    📄 Descargar PDF
-                  </a>
+                  <button
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => openPdf(selected)}
+                    disabled={pdfLoadingId === selected.id}
+                  >
+                    {pdfLoadingId === selected.id ? '⏳ Descargando...' : '📄 Descargar PDF'}
+                  </button>
                 )}
               </div>
             </div>
