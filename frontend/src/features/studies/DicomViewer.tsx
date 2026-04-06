@@ -44,7 +44,7 @@ export interface ViewerMeasurement {
 
 interface DicomViewerProps {
   imageUrls: string[];
-  /** Called when the user clicks "Import measurements" — provides parsed annotations */
+  /** Called when the user clicks "📥 Mediciones" (Import measurements) — provides parsed annotations */
   onImportMeasurements?: (measurements: ViewerMeasurement[]) => void;
 }
 

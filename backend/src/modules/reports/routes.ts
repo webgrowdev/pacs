@@ -269,7 +269,7 @@ reportsRouter.post('/:id/finalize', requireRole('DOCTOR', 'ADMIN') as any, async
   }
 });
 
-// Firmar informe — sólo informes en estado FINAL pueden ser firmados
+// Firmar informe — solo informes en estado FINAL pueden ser firmados
 reportsRouter.post('/:id/sign', requireRole('DOCTOR', 'ADMIN') as any, async (req: AuthRequest, res: any) => {
   try {
     const report = await prisma.report.findUnique({ where: { id: String(req.params.id) } });

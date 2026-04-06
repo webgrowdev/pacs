@@ -43,7 +43,7 @@ export function RichTextEditor({ value, onChange, placeholder, minHeight = 110, 
     }
   }, [execCmd]);
 
-  // Insert a simple 2×3 table at the current cursor position
+  // Insert a 3-column table (header + 2 data rows) at the current cursor position
   const insertTable = useCallback(() => {
     if (disabled) return;
     const tableHtml =

@@ -277,7 +277,9 @@ export function StudyDetailPage() {
       const newOnes = imported.filter((m) => !existing.has(`${m.label}:${m.value}:${m.unit}`));
       return [...prev, ...newOnes];
     });
-    showMessage('success', `${imported.length} medición${imported.length !== 1 ? 'es' : ''} importada${imported.length !== 1 ? 's' : ''} del visor`);
+    const n = imported.length;
+    const plural = n !== 1;
+    showMessage('success', `${n} medición${plural ? 'es' : ''} importada${plural ? 's' : ''} del visor`);
   }, []);
 
   const filesBase = getFilesBaseUrl();
