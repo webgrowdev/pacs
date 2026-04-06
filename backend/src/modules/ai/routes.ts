@@ -70,7 +70,8 @@ aiRouter.post('/suggest-report', async (req: any, res: any) => {
           findings: result.findings ?? '',
           conclusion: result.conclusion ?? '',
           disclaimer: 'Generado por IA (GPT). El médico debe validar, corregir y firmar el informe.',
-          confidence: 'medium'
+          confidence: 'medium',
+          model: env.OPENAI_MODEL
         });
       }
     } catch (err) {
@@ -84,7 +85,8 @@ aiRouter.post('/suggest-report', async (req: any, res: any) => {
     findings: buildFindings(lower, notes),
     conclusion: buildConclusion(lower),
     disclaimer: 'Sugerencia editorial automática. El médico debe validar, corregir y firmar el informe.',
-    confidence: 'low'
+    confidence: 'low',
+    model: 'local-template'
   });
 });
 
@@ -116,7 +118,8 @@ aiRouter.post('/patient-summary', async (req: any, res: any) => {
       if (patientSummary) {
         return res.json({
           patientSummary,
-          disclaimer: 'Resumen generado por IA. Consulte con su médico para interpretación completa.'
+          disclaimer: 'Resumen generado por IA. Consulte con su médico para interpretación completa.',
+          model: env.OPENAI_MODEL
         });
       }
     } catch (err) {
@@ -126,7 +129,8 @@ aiRouter.post('/patient-summary', async (req: any, res: any) => {
 
   return res.json({
     patientSummary: buildPatientSummary(conclusion),
-    disclaimer: 'Resumen orientativo para el paciente. Consulte con su médico.'
+    disclaimer: 'Resumen orientativo para el paciente. Consulte con su médico.',
+    model: 'local-template'
   });
 });
 
@@ -162,7 +166,8 @@ aiRouter.post('/check-consistency', async (req: any, res: any) => {
         return res.json({
           warnings: result.warnings ?? [],
           ok: result.ok ?? result.warnings?.length === 0,
-          disclaimer: 'Revisión asistida por IA. No garantiza calidad diagnóstica completa.'
+          disclaimer: 'Revisión asistida por IA. No garantiza calidad diagnóstica completa.',
+          model: env.OPENAI_MODEL
         });
       }
     } catch (err) {
@@ -180,7 +185,7 @@ aiRouter.post('/check-consistency', async (req: any, res: any) => {
   if (modality === 'RM' && !findings.toLowerCase().includes('señal') && !findings.toLowerCase().includes('intensidad')) {
     warnings.push('En RM es habitual describir señal e intensidad en los hallazgos.');
   }
-  return res.json({ warnings, ok: warnings.length === 0, disclaimer: 'Revisión automática básica.' });
+  return res.json({ warnings, ok: warnings.length === 0, disclaimer: 'Revisión automática básica.', model: 'local-rules' });
 });
 
 // ─── Helpers template ────────────────────────────────────────────────────────

@@ -236,6 +236,20 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
   const [isInverted,   setIsInverted]   = useState(false);
   const [rotation,     setRotation]     = useState(0);
 
+  // ── Refs that mirror state — used by saveViewerState so that callback is
+  //    stable (deps=[studyId] only) and the autosave timer doesn't reset on
+  //    every frame scroll (C4 fix).
+  const currentIndexRef = useRef(0);
+  const activeToolRef   = useRef<ToolName>('WindowLevel');
+  const rotationRef     = useRef(0);
+  const isInvertedRef   = useRef(false);
+
+  // Sync state → refs after each render
+  useEffect(() => { currentIndexRef.current = currentIndex; }, [currentIndex]);
+  useEffect(() => { activeToolRef.current   = activeTool;   }, [activeTool]);
+  useEffect(() => { rotationRef.current     = rotation;     }, [rotation]);
+  useEffect(() => { isInvertedRef.current   = isInverted;   }, [isInverted]);
+
   // ── Activate a tool on the current group ────────────────────────────────────
   const activateTool = useCallback((toolName: ToolName) => {
     if (!toolGroupRef.current) return;
@@ -325,6 +339,9 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
   }, [getViewport]);
 
   // ── Save viewer state to backend ─────────────────────────────────────────────
+  // Uses refs (not state) so this callback is stable for the entire study
+  // session — its only dependency is studyId.  That makes the autosave
+  // useEffect below immune to frame-scroll re-renders (C4 fix).
   const saveViewerState = useCallback(async () => {
     if (!studyId || !engineRef.current) return;
     try {
@@ -333,26 +350,35 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
       const camera = vp?.getCamera?.() ?? {};
 
       const annotationState = (csTools as any).annotation?.state;
-      const snapshot = typeof annotationState?.getAllAnnotations === 'function'
-        ? annotationState.getAllAnnotations()
-        : undefined;
+      let annotationSnapshot: Record<string, any[]> | undefined;
+      if (typeof annotationState?.getAllAnnotations === 'function') {
+        try {
+          // JSON round-trip ensures the snapshot is plain and serializable
+          // (strips Symbols, Functions, or any non-serializable internals).
+          annotationSnapshot = JSON.parse(JSON.stringify(annotationState.getAllAnnotations()));
+        } catch {
+          annotationSnapshot = undefined;
+        }
+      }
 
       await api.put(`/viewer/${studyId}/state`, {
-        windowWidth:  props.voiRange ? Math.round(props.voiRange.upper - props.voiRange.lower) : currentWW,
-        windowCenter: props.voiRange ? Math.round((props.voiRange.upper + props.voiRange.lower) / 2) : currentWL,
+        windowWidth:  props.voiRange ? Math.round(props.voiRange.upper - props.voiRange.lower) : null,
+        windowCenter: props.voiRange ? Math.round((props.voiRange.upper + props.voiRange.lower) / 2) : null,
         zoom:         camera.parallelScale ?? null,
         panX:         camera.focalPoint?.[0] ?? null,
         panY:         camera.focalPoint?.[1] ?? null,
-        rotation,
-        isInverted,
-        frameIndex:   currentIndex,
-        activeTool,
-        annotationSnapshot: snapshot
+        rotation:     rotationRef.current,
+        isInverted:   isInvertedRef.current,
+        frameIndex:   currentIndexRef.current,
+        activeTool:   activeToolRef.current,
+        annotationSnapshot
       });
     } catch {
       // Non-fatal: viewer state save failure should not block the user
     }
-  }, [studyId, currentIndex, activeTool, rotation, isInverted, currentWW, currentWL]);
+  // studyId is the only real dependency — all mutable viewer values come from
+  // refs or are read directly from the engine at call time.
+  }, [studyId]);
 
   // ── Restore viewer state from backend ────────────────────────────────────────
   const restoreViewerState = useCallback(async () => {
@@ -385,11 +411,20 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
         setCurrentIndex(data.frameIndex);
       }
 
-      // Restore annotations
-      if (data.annotationSnapshot) {
+      // ── Restore annotations (C1 fix) ─────────────────────────────────────
+      // csTools v3.x exposes addAnnotation(annotation, element) but does NOT
+      // have restoreAnnotations().  We iterate over the persisted snapshot
+      // (shape: {[toolName]: Annotation[]}) and re-add each annotation so
+      // they are visually rendered in the viewport.
+      if (data.annotationSnapshot && elementRef.current) {
         const annotationState = (csTools as any).annotation?.state;
-        if (typeof annotationState?.restoreAnnotations === 'function') {
-          annotationState.restoreAnnotations(data.annotationSnapshot);
+        if (typeof annotationState?.addAnnotation === 'function') {
+          const entries = Object.entries(data.annotationSnapshot as Record<string, any[]>);
+          for (const [, annotations] of entries) {
+            for (const ann of (Array.isArray(annotations) ? annotations : [])) {
+              try { annotationState.addAnnotation(ann, elementRef.current); } catch {}
+            }
+          }
         }
       }
 
@@ -419,23 +454,41 @@ export const DicomViewer = forwardRef<DicomViewerHandle, DicomViewerProps>(
     },
     navigateToSopInstance: async (sopInstanceUid: string, frameIndex?: number) => {
       if (!engineRef.current) return;
-      // Find the index in imageIds that corresponds to this SOPInstanceUID
-      if (sopIndexMap && sopIndexMap[sopInstanceUid] !== undefined) {
-        const idx = sopIndexMap[sopInstanceUid];
-        try {
-          const vp = engineRef.current.getViewport(VIEWPORT_ID) as any;
+      try {
+        const vp = engineRef.current.getViewport(VIEWPORT_ID) as any;
+        const imageIds = imageIdsRef.current;
+
+        // 1. Exact match via DB-populated sopIndexMap (fastest, most reliable)
+        if (sopIndexMap && sopIndexMap[sopInstanceUid] !== undefined) {
+          const idx = sopIndexMap[sopInstanceUid];
           await vp.setImageIdIndex(idx);
           vp.render();
           setCurrentIndex(idx);
-        } catch {}
-      } else if (frameIndex != null) {
-        try {
-          const vp = engineRef.current.getViewport(VIEWPORT_ID) as any;
+          return;
+        }
+
+        // 2. Scan loaded imageIds for the SOP UID via CornerstoneJS metadata.
+        //    Works when DicomFile.sopInstanceUid is null in the DB but the
+        //    image was successfully loaded and its metadata was registered
+        //    by the dicom-image-loader (C5 fix).
+        for (let i = 0; i < imageIds.length; i++) {
+          if (parseSopFromImageId(imageIds[i]) === sopInstanceUid) {
+            await vp.setImageIdIndex(i);
+            vp.render();
+            setCurrentIndex(i);
+            return;
+          }
+        }
+
+        // 3. Deterministic fallback: frameIndex captured at measurement time.
+        //    Files are always ordered by instanceNumber ASC, so the index is
+        //    consistent across sessions for the same study.
+        if (frameIndex != null && frameIndex >= 0 && frameIndex < imageIds.length) {
           await vp.setImageIdIndex(frameIndex);
           vp.render();
           setCurrentIndex(frameIndex);
-        } catch {}
-      }
+        }
+      } catch {}
     }
   }), [sopIndexMap]);
 

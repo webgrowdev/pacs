@@ -45,6 +45,12 @@ interface AiSession {
   editedByUser?: boolean;
 }
 
+interface PendingAiSuggestion {
+  sessionIndex: number;
+  section: 'findings' | 'conclusion' | 'patientSummary';
+  suggestedText: string;
+}
+
 interface Report {
   id:             string;
   status:         string;
@@ -116,6 +122,14 @@ export function StudyDetailPage() {
   const [aiSessions,     setAiSessions]     = useState<AiSession[]>([]);
   const [aiUsed,         setAiUsed]         = useState(false);
   const [aiModel,        setAiModel]        = useState<string | undefined>();
+
+  // ── D2: track pending AI suggestions for modification/discard detection ───────
+  // Each entry records which session index corresponds to which suggested text,
+  // so we can detect at save time whether the user modified the AI output.
+  const pendingAiSuggestionsRef = useRef<PendingAiSuggestion[]>([]);
+  // Stores pre-AI text so it can be restored on explicit discard
+  const preAiTextRef = useRef<{ findings: string; conclusion: string } | null>(null);
+  const [hasPendingAiSuggestion, setHasPendingAiSuggestion] = useState(false);
 
   // Addendum state
   const [showAddendumModal, setShowAddendumModal] = useState(false);
@@ -230,6 +244,7 @@ export function StudyDetailPage() {
     if (!study) return;
     setSaving(true);
     try {
+      const resolvedSessions = resolveAiSessions(findings, conclusion, patientSummary);
       const payload = {
         studyId: study.id,
         findings,
@@ -238,7 +253,7 @@ export function StudyDetailPage() {
         measurements,
         aiUsed,
         aiModel,
-        aiSessions
+        aiSessions: resolvedSessions
       };
       if (report) {
         const { data } = await api.put(`/reports/${report.id}`, payload);
@@ -296,6 +311,7 @@ export function StudyDetailPage() {
     if (!report || !addendumReason.trim()) return;
     setCreatingAddendum(true);
     try {
+      const resolvedSessions = resolveAiSessions(findings, conclusion, patientSummary);
       const { data } = await api.post(`/reports/${report.id}/addendum`, {
         findings:      findings || report.findings,
         conclusion:    conclusion || report.conclusion,
@@ -304,7 +320,7 @@ export function StudyDetailPage() {
         measurements,
         aiUsed,
         aiModel,
-        aiSessions
+        aiSessions: resolvedSessions
       });
       setReport(data);
       setFindings(data.findings);
@@ -329,16 +345,83 @@ export function StudyDetailPage() {
     setAiModel(model);
   };
 
+  // Resolve pending AI sessions: compare current text against what was
+  // originally suggested.  Called just before any persist operation so
+  // that the final action stored is accurate (accepted / modified / discarded).
+  const resolveAiSessions = useCallback((
+    currentFindings: string,
+    currentConclusion: string,
+    currentPatientSummary: string
+  ): AiSession[] => {
+    const pending = pendingAiSuggestionsRef.current;
+    if (!pending.length) return aiSessions;
+    return aiSessions.map((s, i) => {
+      if (s.action !== 'accepted') return s;
+      const match = pending.find((p) => p.sessionIndex === i);
+      if (!match) return s;
+      const currentText =
+        match.section === 'findings'      ? currentFindings :
+        match.section === 'conclusion'    ? currentConclusion :
+                                            currentPatientSummary;
+      return currentText !== match.suggestedText
+        ? { ...s, action: 'modified' as const }
+        : s;
+    });
+  }, [aiSessions]);
+
+  // Explicitly discard the last AI suggestion: restore pre-AI text and mark
+  // the corresponding sessions as 'discarded'.
+  const discardAiSuggestion = useCallback(() => {
+    const pre = preAiTextRef.current;
+    if (!pre) return;
+    setFindings(pre.findings);
+    setConclusion(pre.conclusion);
+    const discardIndices = new Set(
+      pendingAiSuggestionsRef.current
+        .filter((p) => p.section === 'findings' || p.section === 'conclusion')
+        .map((p) => p.sessionIndex)
+    );
+    setAiSessions((prev) =>
+      prev.map((s, i) =>
+        discardIndices.has(i) && s.action === 'accepted'
+          ? { ...s, action: 'discarded' as const }
+          : s
+      )
+    );
+    pendingAiSuggestionsRef.current = pendingAiSuggestionsRef.current.filter(
+      (p) => p.section !== 'findings' && p.section !== 'conclusion'
+    );
+    preAiTextRef.current = null;
+    setHasPendingAiSuggestion(false);
+    showMessage('success', 'Sugerencia de IA descartada');
+  }, []);
+
   const suggestAI = async () => {
     setAiLoading(true);
     setWarnings([]);
     try {
       const { data } = await api.post('/ai/suggest-report', { notes: findings || 'estudio de rutina' });
+      const model = data.model ?? 'unknown';
+
+      // Capture pre-AI text for discard restoration
+      preAiTextRef.current = { findings, conclusion };
+
+      // Record two sessions (findings + conclusion) and note their indices
+      // so resolveAiSessions can compare actual text at save time.
+      const baseIdx = aiSessions.length;
+      recordAiSession('findings',    'accepted', model);
+      recordAiSession('conclusion',  'accepted', model);
+
+      pendingAiSuggestionsRef.current.push(
+        { sessionIndex: baseIdx,     section: 'findings',   suggestedText: data.findings  },
+        { sessionIndex: baseIdx + 1, section: 'conclusion', suggestedText: data.conclusion }
+      );
+      setHasPendingAiSuggestion(true);
+
       setFindings(data.findings);
       setConclusion(data.conclusion);
       setAiDisclaimer(data.disclaimer);
       setShowAiPanel(true);
-      recordAiSession('findings', 'accepted', data.model ?? 'unknown');
     } catch {
       showMessage('error', 'Error al obtener sugerencia de IA');
     } finally {
@@ -351,8 +434,17 @@ export function StudyDetailPage() {
     setSummaryLoading(true);
     try {
       const { data } = await api.post('/ai/patient-summary', { conclusion });
+      const model = data.model ?? 'unknown';
+
+      const baseIdx = aiSessions.length;
+      recordAiSession('patientSummary', 'accepted', model);
+
+      pendingAiSuggestionsRef.current.push(
+        { sessionIndex: baseIdx, section: 'patientSummary', suggestedText: data.patientSummary }
+      );
+      setHasPendingAiSuggestion(true);
+
       setPatientSummary(data.patientSummary);
-      recordAiSession('patientSummary', 'accepted', data.model ?? 'unknown');
     } catch {
       showMessage('error', 'Error al generar resumen para paciente');
     } finally {
@@ -367,6 +459,7 @@ export function StudyDetailPage() {
       const { data } = await api.post('/ai/check-consistency', { findings, conclusion, modality: study?.modality });
       setWarnings(data.warnings);
       setShowAiPanel(true);
+      // Consistency check doesn't write text — record the model but no text to track
       recordAiSession('consistency', 'accepted', data.model ?? 'unknown');
     } catch {
       showMessage('error', 'Error al revisar consistencia');
@@ -982,6 +1075,18 @@ export function StudyDetailPage() {
                           >
                             {consistencyLoading ? '...' : '⚑'} Revisar consistencia
                           </button>
+
+                          {/* Discard button — visible while a suggestion is pending */}
+                          {hasPendingAiSuggestion && (
+                            <button
+                              className="btn btn-ghost btn-sm"
+                              onClick={discardAiSuggestion}
+                              style={{ justifyContent: 'flex-start', gap: 6, color: '#b45309', borderColor: '#f59e0b' }}
+                              title="Revertir al texto anterior y marcar sugerencia como descartada"
+                            >
+                              ✕ Descartar sugerencia IA
+                            </button>
+                          )}
 
                           {/* AI warnings / disclaimer */}
                           {(warnings.length > 0 || aiDisclaimer) && (
