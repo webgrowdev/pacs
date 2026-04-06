@@ -34,8 +34,18 @@ async function initializeCornerstone() {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** A measurement extracted from a CornerstoneJS annotation */
+export interface ViewerMeasurement {
+  type: string;
+  label: string;
+  value: number;
+  unit: string;
+}
+
 interface DicomViewerProps {
   imageUrls: string[];
+  /** Called when the user clicks "📥 Mediciones" (Import measurements) — provides parsed annotations */
+  onImportMeasurements?: (measurements: ViewerMeasurement[]) => void;
 }
 
 type ToolName =
@@ -114,7 +124,7 @@ const ALL_TOOL_CLASSES = Object.values(TOOL_CLASS_MAP);
 
 const VIEWPORT_ID = 'dicom-vp';
 
-export function DicomViewer({ imageUrls }: DicomViewerProps) {
+export function DicomViewer({ imageUrls, onImportMeasurements }: DicomViewerProps) {
   const elementRef    = useRef<HTMLDivElement>(null);
   const engineRef     = useRef<cornerstone.RenderingEngine | null>(null);
   const toolGroupRef  = useRef<any>(null);
@@ -216,6 +226,84 @@ export function DicomViewer({ imageUrls }: DicomViewerProps) {
       setCurrentWL(wl);
     } catch {}
   }, [getViewport]);
+
+  // ── Export current frame as PNG ──────────────────────────────────────────────
+  const handleExportPng = useCallback(() => {
+    // CornerstoneJS renders onto a <canvas> inside elementRef
+    const canvas = elementRef.current?.querySelector('canvas');
+    if (!canvas) return;
+    try {
+      const url = (canvas as HTMLCanvasElement).toDataURL('image/png');
+      const a   = document.createElement('a');
+      a.href     = url;
+      a.download = `dicom-frame-${Date.now()}.png`;
+      a.click();
+    } catch {}
+  }, []);
+
+  // ── Extract annotation measurements and pass to parent ───────────────────────
+  const handleImportMeasurements = useCallback(() => {
+    if (!onImportMeasurements) return;
+    try {
+      // @cornerstonejs/tools v3: annotation state is accessible via
+      // csTools.annotation.state.getAllAnnotations() which returns an
+      // AnnotationState object indexed by toolName → array of annotations.
+      const annotationState = (csTools as any).annotation?.state;
+      if (!annotationState) { onImportMeasurements([]); return; }
+
+      // Try getAllAnnotations (tool-keyed map) or fall back to empty
+      const allRaw: Record<string, any[]> =
+        typeof annotationState.getAllAnnotations === 'function'
+          ? annotationState.getAllAnnotations()
+          : {};
+
+      const imported: ViewerMeasurement[] = [];
+
+      const extractStat = (ann: any, key: string): number | null => {
+        const stats = Object.values(ann?.data?.cachedStats ?? {});
+        for (const s of stats) {
+          const v = (s as any)?.[key];
+          if (v != null && isFinite(v)) return v;
+        }
+        return null;
+      };
+
+      // Length / Bidirectional → length in mm
+      for (const toolKey of ['Length', 'LengthTool', 'Bidirectional', 'BidirectionalTool']) {
+        for (const ann of (allRaw[toolKey] ?? [])) {
+          const len = extractStat(ann, 'length');
+          if (len != null) {
+            imported.push({ type: 'LINEAR', label: toolKey.replace('Tool', ''), value: parseFloat(len.toFixed(2)), unit: 'mm' });
+          }
+        }
+      }
+
+      // Angle → degrees
+      for (const toolKey of ['Angle', 'AngleTool']) {
+        for (const ann of (allRaw[toolKey] ?? [])) {
+          const deg = extractStat(ann, 'angle');
+          if (deg != null) {
+            imported.push({ type: 'ANGLE', label: 'Ángulo', value: parseFloat(deg.toFixed(1)), unit: '°' });
+          }
+        }
+      }
+
+      // ROI → mean HU
+      for (const toolKey of ['EllipticalROI', 'EllipticalROITool', 'RectangleROI', 'RectangleROITool']) {
+        for (const ann of (allRaw[toolKey] ?? [])) {
+          const mean = extractStat(ann, 'mean');
+          if (mean != null) {
+            const label = toolKey.replace('Tool', '').replace('Elliptical', 'ROI Elíptica').replace('Rectangle', 'ROI Rect.');
+            imported.push({ type: 'ROI', label, value: parseFloat(mean.toFixed(1)), unit: 'HU' });
+          }
+        }
+      }
+
+      onImportMeasurements(imported);
+    } catch {
+      onImportMeasurements([]);
+    }
+  }, [onImportMeasurements]);
 
   // ── Main initialization effect ───────────────────────────────────────────────
   useEffect(() => {
@@ -422,6 +510,10 @@ export function DicomViewer({ imageUrls }: DicomViewerProps) {
           <button className={`btn btn-sm btn-ghost ${isInverted ? 'btn-primary' : ''}`} onClick={handleInvert} disabled={!ready} title="Invertir" style={toolbarBtnStyle(isInverted)}>⊘ Inv</button>
           <button className="btn btn-ghost btn-sm" onClick={handleReset} disabled={!ready} title="Reset vista" style={toolbarBtnStyle(false)}>⟳ Reset</button>
           <button className="btn btn-ghost btn-sm" onClick={handleFullscreen} disabled={!ready} title="Pantalla completa" style={toolbarBtnStyle(false)}>⛶</button>
+          <button className="btn btn-ghost btn-sm" onClick={handleExportPng} disabled={!ready} title="Exportar frame como PNG" style={toolbarBtnStyle(false)}>📷 PNG</button>
+          {onImportMeasurements && (
+            <button className="btn btn-ghost btn-sm" onClick={handleImportMeasurements} disabled={!ready} title="Importar mediciones del visor al informe" style={toolbarBtnStyle(false)}>📥 Mediciones</button>
+          )}
         </div>
         <div style={{ width: 1, height: 24, background: 'rgba(255,255,255,0.15)', margin: '0 4px' }} />
         {/* Window presets */}

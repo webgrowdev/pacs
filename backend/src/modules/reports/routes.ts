@@ -268,3 +268,43 @@ reportsRouter.post('/:id/finalize', requireRole('DOCTOR', 'ADMIN') as any, async
     return res.status(500).json({ message: 'Error al finalizar informe' });
   }
 });
+
+// Firmar informe — solo informes en estado FINAL pueden ser firmados
+reportsRouter.post('/:id/sign', requireRole('DOCTOR', 'ADMIN') as any, async (req: AuthRequest, res: any) => {
+  try {
+    const report = await prisma.report.findUnique({ where: { id: String(req.params.id) } });
+    if (!report) return res.status(404).json({ message: 'Informe no encontrado' });
+
+    // Solo el médico dueño o admin pueden firmar
+    if (req.user?.role === 'DOCTOR' && report.doctorId !== req.user.sub) {
+      return res.status(403).json({ message: 'No autorizado para firmar este informe' });
+    }
+
+    // Solo se pueden firmar informes ya finalizados
+    if (report.status !== ReportStatus.FINAL) {
+      return res.status(422).json({ message: 'Solo se pueden firmar informes en estado FINAL' });
+    }
+
+    // SHA-256 del contenido como sello de integridad
+    const contentHash = crypto
+      .createHash('sha256')
+      .update(`${report.findings}|${report.conclusion}`)
+      .digest('hex');
+
+    const updated = await prisma.report.update({
+      where: { id: report.id },
+      data:  { status: ReportStatus.SIGNED }
+    });
+
+    await logAudit(req, 'REPORT_SIGNED', 'REPORT', report.id, {
+      doctorId:    req.user!.sub,
+      contentHash,
+      signedAt:    new Date().toISOString()
+    });
+
+    return res.json(updated);
+  } catch (err) {
+    console.error('[REPORTS/SIGN]', err);
+    return res.status(500).json({ message: 'Error al firmar informe' });
+  }
+});
