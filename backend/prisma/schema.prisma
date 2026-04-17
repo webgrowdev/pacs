@@ -38,6 +38,7 @@ enum ReportStatus {
   DRAFT
   FINAL
   SIGNED
+  ADDENDUM
 }
 
 model Role {
@@ -154,8 +155,28 @@ model Report {
   draftedAt         DateTime?
   finalizedAt       DateTime?
   pdfPath           String?              @db.Text
+
+  // ─── Versioning & addendum ────────────────────────────────────────────────
+  versionNumber     Int                  @default(1)
+  parentReportId    String?
+  parentReport      Report?              @relation("ReportVersions", fields: [parentReportId], references: [id])
+  childReports      Report[]             @relation("ReportVersions")
+  isAddendum        Boolean              @default(false)
+  addendumReason    String?              @db.Text
+  addendumAt        DateTime?
+  addendumByUserId  String?
+
+  // ─── Content integrity ────────────────────────────────────────────────────
+  signatureHash     String?              // SHA-256 of findings|conclusion stored on model
+
+  // ─── AI attribution ───────────────────────────────────────────────────────
+  aiUsed            Boolean              @default(false)
+  aiModel           String?              // e.g. "gpt-4o-mini", "local-template"
+  aiSessions        Json?                // [{requestedAt, model, section, action, editedByUser}]
+
   measurements      ReportMeasurement[]
   documents         GeneratedDocument[]
+  keyImages         KeyImage[]
   createdAt         DateTime             @default(now())
   updatedAt         DateTime             @updatedAt
 }
@@ -164,11 +185,39 @@ model ReportMeasurement {
   id        String   @id @default(cuid())
   reportId  String
   report    Report   @relation(fields: [reportId], references: [id])
-  type      String
-  label     String
-  value     Float
-  unit      String
+
+  // ─── Primary evidence references (DICOM identifiers) ─────────────────────
+  sopInstanceUid      String?   // (0008,0018) — exact image
+  seriesInstanceUid   String?   // (0020,000E)
+  studyInstanceUid    String?   // (0020,000D)
+  frameOfReferenceUid String?   // (0020,0052)
+  instanceNumber      Int?      // DICOM instance number
+  frameIndex          Int?      // 0-based frame within multi-frame instance
+
+  // ─── Geometry ─────────────────────────────────────────────────────────────
+  coordinatesJson     Json?     // [{x,y}, ...] in image pixel space
+  imageWidth          Int?
+  imageHeight         Int?
+
+  // ─── Tool & result ────────────────────────────────────────────────────────
+  toolName            String?   // exact CornerstoneJS toolName: "LengthTool", "EllipticalROITool"
+  type                String    // "LINEAR", "ANGLE", "ROI", "PROBE"
+  label               String
+  value               Float
+  unit                String
+  extraStatsJson      Json?     // {mean, stdDev, min, max, area, ...}
+
+  // ─── Attribution ──────────────────────────────────────────────────────────
+  createdByUserId     String?   // userId of the doctor who created the measurement
+
+  // ─── Lifecycle ────────────────────────────────────────────────────────────
+  isActive            Boolean  @default(true)
+  deletedAt           DateTime?
+  deletedByUserId     String?
+  version             Int      @default(1)
+
   createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model PatientPortalAccess {
@@ -268,4 +317,47 @@ model ReportTemplate {
   isActive           Boolean  @default(true)
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
+}
+
+// ─── Viewer state persistence ─────────────────────────────────────────────────
+// Persists each doctor's reading session so it survives refresh / logout / reopen.
+
+model ViewerState {
+  id          String   @id @default(cuid())
+  studyId     String
+  userId      String
+
+  // Viewport parameters
+  windowWidth   Float?
+  windowCenter  Float?
+  zoom          Float?
+  panX          Float?
+  panY          Float?
+  rotation      Float    @default(0)
+  isInverted    Boolean  @default(false)
+  frameIndex    Int      @default(0)
+  activeTool    String?
+
+  // Full annotation snapshot — serialised csTools.annotation.state
+  annotationSnapshot Json?
+
+  savedAt   DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([studyId, userId])
+}
+
+// ─── Key images (Key Object Selection equivalent) ─────────────────────────────
+
+model KeyImage {
+  id              String   @id @default(cuid())
+  reportId        String
+  report          Report   @relation(fields: [reportId], references: [id])
+  studyId         String
+  sopInstanceUid  String   // image this key frame belongs to
+  instanceNumber  Int?
+  frameIndex      Int?
+  description     String?
+  createdByUserId String
+  createdAt       DateTime @default(now())
 }

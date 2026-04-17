@@ -16,7 +16,8 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import OpenAI from 'openai';
-import { requireAuth, requireRole } from '../../middleware/auth.js';
+import { requireAuth, requireRole, AuthRequest } from '../../middleware/auth.js';
+import { logAudit } from '../../middleware/audit.js';
 import { env } from '../../config/env.js';
 import { scrubPhiFromText } from '../../utils/security.js';
 
@@ -41,6 +42,12 @@ aiRouter.post('/suggest-report', async (req: any, res: any) => {
   if (!parsed.success) return res.status(400).json({ message: 'Notas inválidas' });
   const { notes } = parsed.data;
 
+  // Audit: AI suggestion requested
+  await logAudit(req, 'AI_SUGGESTION_REQUESTED', 'AI', undefined, {
+    section: 'suggest-report',
+    model: env.OPENAI_API_KEY ? env.OPENAI_MODEL : 'local-template'
+  });
+
   const openai = getOpenAI();
   if (openai) {
     try {
@@ -63,7 +70,8 @@ aiRouter.post('/suggest-report', async (req: any, res: any) => {
           findings: result.findings ?? '',
           conclusion: result.conclusion ?? '',
           disclaimer: 'Generado por IA (GPT). El médico debe validar, corregir y firmar el informe.',
-          confidence: 'medium'
+          confidence: 'medium',
+          model: env.OPENAI_MODEL
         });
       }
     } catch (err) {
@@ -77,7 +85,8 @@ aiRouter.post('/suggest-report', async (req: any, res: any) => {
     findings: buildFindings(lower, notes),
     conclusion: buildConclusion(lower),
     disclaimer: 'Sugerencia editorial automática. El médico debe validar, corregir y firmar el informe.',
-    confidence: 'low'
+    confidence: 'low',
+    model: 'local-template'
   });
 });
 
@@ -85,6 +94,11 @@ aiRouter.post('/patient-summary', async (req: any, res: any) => {
   const parsed = summarySchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ message: 'Conclusión inválida' });
   const { conclusion } = parsed.data;
+
+  await logAudit(req, 'AI_SUGGESTION_REQUESTED', 'AI', undefined, {
+    section: 'patient-summary',
+    model: env.OPENAI_API_KEY ? env.OPENAI_MODEL : 'local-template'
+  });
 
   const openai = getOpenAI();
   if (openai) {
@@ -104,7 +118,8 @@ aiRouter.post('/patient-summary', async (req: any, res: any) => {
       if (patientSummary) {
         return res.json({
           patientSummary,
-          disclaimer: 'Resumen generado por IA. Consulte con su médico para interpretación completa.'
+          disclaimer: 'Resumen generado por IA. Consulte con su médico para interpretación completa.',
+          model: env.OPENAI_MODEL
         });
       }
     } catch (err) {
@@ -114,7 +129,8 @@ aiRouter.post('/patient-summary', async (req: any, res: any) => {
 
   return res.json({
     patientSummary: buildPatientSummary(conclusion),
-    disclaimer: 'Resumen orientativo para el paciente. Consulte con su médico.'
+    disclaimer: 'Resumen orientativo para el paciente. Consulte con su médico.',
+    model: 'local-template'
   });
 });
 
@@ -122,6 +138,11 @@ aiRouter.post('/check-consistency', async (req: any, res: any) => {
   const parsed = consistencySchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ message: 'Datos inválidos' });
   const { findings, conclusion, modality } = parsed.data;
+
+  await logAudit(req, 'AI_CONSISTENCY_CHECK', 'AI', undefined, {
+    modality,
+    model: env.OPENAI_API_KEY ? env.OPENAI_MODEL : 'local-rules'
+  });
 
   const openai = getOpenAI();
   if (openai) {
@@ -145,7 +166,8 @@ aiRouter.post('/check-consistency', async (req: any, res: any) => {
         return res.json({
           warnings: result.warnings ?? [],
           ok: result.ok ?? result.warnings?.length === 0,
-          disclaimer: 'Revisión asistida por IA. No garantiza calidad diagnóstica completa.'
+          disclaimer: 'Revisión asistida por IA. No garantiza calidad diagnóstica completa.',
+          model: env.OPENAI_MODEL
         });
       }
     } catch (err) {
@@ -163,7 +185,7 @@ aiRouter.post('/check-consistency', async (req: any, res: any) => {
   if (modality === 'RM' && !findings.toLowerCase().includes('señal') && !findings.toLowerCase().includes('intensidad')) {
     warnings.push('En RM es habitual describir señal e intensidad en los hallazgos.');
   }
-  return res.json({ warnings, ok: warnings.length === 0, disclaimer: 'Revisión automática básica.' });
+  return res.json({ warnings, ok: warnings.length === 0, disclaimer: 'Revisión automática básica.', model: 'local-rules' });
 });
 
 // ─── Helpers template ────────────────────────────────────────────────────────

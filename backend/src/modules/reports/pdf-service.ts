@@ -26,7 +26,15 @@ export interface PdfInput {
   findings: string;
   conclusion: string;
   patientSummary?: string;
-  measurements: Array<{ label: string; value: number; unit: string }>;
+  aiUsed?: boolean;
+  measurements: Array<{
+    label: string;
+    value: number;
+    unit: string;
+    sopInstanceUid?: string;
+    instanceNumber?: number;
+    frameIndex?: number;
+  }>;
 }
 
 const BRAND_COLOR = '#1e3a5f';
@@ -185,6 +193,16 @@ export async function generateClinicalPdf(input: PdfInput): Promise<string> {
         doc.fill(ACCENT_COLOR).fontSize(10).font('Helvetica-Bold').text('▸ ', { continued: true });
         doc.fill(TEXT_COLOR).font('Helvetica').text(`${m.label}: `, { continued: true });
         doc.font('Helvetica-Bold').text(`${m.value} ${m.unit}`);
+        // Show DICOM traceability reference when available
+        if (m.sopInstanceUid) {
+          const sopShort = m.sopInstanceUid.length > 24
+            ? `${m.sopInstanceUid.slice(0, 24)}…`
+            : m.sopInstanceUid;
+          const ref = m.instanceNumber != null
+            ? `Imagen ${m.instanceNumber}${m.frameIndex != null ? ` / frame ${m.frameIndex}` : ''} · SOP: ${sopShort}`
+            : `SOP: ${sopShort}`;
+          doc.fill(SUBTITLE_COLOR).fontSize(8).font('Helvetica').text(`   Ref: ${ref}`);
+        }
       });
       doc.moveDown(1.2);
     }
@@ -224,20 +242,22 @@ export async function generateClinicalPdf(input: PdfInput): Promise<string> {
     doc.fill(SUBTITLE_COLOR).fontSize(8)
        .text(`Firmado: ${formatDate(new Date())}`, col2, sigTextY, { width: 180, align: 'center' });
 
-    // ─── DISCLAIMER IA ────────────────────────────────────────────────────────
-    doc.addPage();
-    doc.rect(0, 0, doc.page.width, doc.page.height).fill('#f8fafc');
-    doc.rect(50, 50, pageWidth, 80).fill('#fef9c3');
-    doc.fill('#854d0e').fontSize(9).font('Helvetica-Bold')
-       .text('⚠ NOTA SOBRE ASISTENCIA DE INTELIGENCIA ARTIFICIAL', 65, 65);
-    doc.fill('#713f12').fontSize(8.5).font('Helvetica')
-       .text(
-         'Este informe puede haber utilizado herramientas de asistencia editorial basadas en inteligencia artificial. ' +
-         'Dichas herramientas asisten en la redacción y estructuración del texto únicamente. ' +
-         'La validación clínica, los hallazgos, la conclusión diagnóstica y la firma son de exclusiva responsabilidad ' +
-         'del médico informante. La IA no genera diagnósticos automáticos ni reemplaza el criterio médico profesional.',
-         65, 82, { width: pageWidth - 30, lineGap: 1.5 }
-       );
+    // ─── DISCLAIMER IA — only shown when AI was actually used ────────────────
+    if (input.aiUsed) {
+      doc.addPage();
+      doc.rect(0, 0, doc.page.width, doc.page.height).fill('#f8fafc');
+      doc.rect(50, 50, pageWidth, 80).fill('#fef9c3');
+      doc.fill('#854d0e').fontSize(9).font('Helvetica-Bold')
+         .text('⚠ NOTA SOBRE ASISTENCIA DE INTELIGENCIA ARTIFICIAL', 65, 65);
+      doc.fill('#713f12').fontSize(8.5).font('Helvetica')
+         .text(
+           'Este informe utilizó herramientas de asistencia editorial basadas en inteligencia artificial. ' +
+           'Dichas herramientas asisten en la redacción y estructuración del texto únicamente. ' +
+           'La validación clínica, los hallazgos, la conclusión diagnóstica y la firma son de exclusiva responsabilidad ' +
+           'del médico informante. La IA no genera diagnósticos automáticos ni reemplaza el criterio médico profesional.',
+           65, 82, { width: pageWidth - 30, lineGap: 1.5 }
+         );
+    }
 
     // ─── FOOTER ───────────────────────────────────────────────────────────────
     addFooter(doc, pageWidth);
@@ -260,7 +280,7 @@ function addFooter(doc: PDFKit.PDFDocument, pageWidth: number) {
   const y = doc.page.height - 50;
   doc.rect(0, y, doc.page.width, 50).fill(BRAND_COLOR);
   doc.fill('rgba(255,255,255,0.7)').fontSize(7.5).font('Helvetica')
-     .text('Documento generado electrónicamente. Válido sin firma manuscrita con autenticación digital.', 50, y + 10, { width: pageWidth, align: 'center' });
+     .text('Documento generado electrónicamente. Conservar junto con el historial clínico del paciente.', 50, y + 10, { width: pageWidth, align: 'center' });
   doc.fill('rgba(255,255,255,0.5)').fontSize(7)
      .text('Este documento es confidencial y de uso exclusivo del paciente y profesionales autorizados.', 50, y + 24, { width: pageWidth, align: 'center' });
 }
