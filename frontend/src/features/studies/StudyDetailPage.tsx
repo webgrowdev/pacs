@@ -258,12 +258,17 @@ export function StudyDetailPage() {
       if (report) {
         const { data } = await api.put(`/reports/${report.id}`, payload);
         setReport(data);
-        showMessage('success', 'Borrador guardado');
       } else {
         const { data } = await api.post('/reports', payload);
         setReport(data);
-        showMessage('success', 'Borrador creado');
       }
+      // Sync in-memory AI state to match what was persisted so that a second
+      // save in the same session resolves correctly against the new baseline.
+      setAiSessions(resolvedSessions);
+      pendingAiSuggestionsRef.current = [];
+      preAiTextRef.current = null;
+      setHasPendingAiSuggestion(false);
+      showMessage('success', 'Borrador guardado');
     } catch (err: any) {
       showMessage('error', err?.response?.data?.message ?? 'Error al guardar borrador');
     } finally {
@@ -326,6 +331,11 @@ export function StudyDetailPage() {
       setFindings(data.findings);
       setConclusion(data.conclusion);
       setMeasurements(data.measurements || []);
+      // Sync AI state so a follow-up save in the same session resolves correctly
+      setAiSessions(resolvedSessions);
+      pendingAiSuggestionsRef.current = [];
+      preAiTextRef.current = null;
+      setHasPendingAiSuggestion(false);
       setShowAddendumModal(false);
       setAddendumReason('');
       showMessage('success', `✓ Addendum v${data.versionNumber} creado.`);
@@ -515,22 +525,27 @@ export function StudyDetailPage() {
 
   const filesBase = getFilesBaseUrl();
 
+  // dicomFiles filtered the same way as the viewer's imageIds — DICOMDIR is
+  // never loaded as an image, so both sopIndexMap and dicomUrls must exclude it
+  // so that their indices stay aligned (C5 fix).
+  const viewableDicomFiles = useMemo(
+    () => study?.dicomFiles.filter((f) => f.fileName.toUpperCase() !== 'DICOMDIR') ?? [],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [study?.id, study?.dicomFiles?.length]
+  );
+
   const sopIndexMap = useMemo((): Record<string, number> => {
-    if (!study?.dicomFiles) return {};
     const map: Record<string, number> = {};
-    study.dicomFiles.forEach((f, i) => {
+    viewableDicomFiles.forEach((f, i) => {
       if (f.sopInstanceUid) map[f.sopInstanceUid] = i;
     });
     return map;
-  }, [study?.dicomFiles]);
+  }, [viewableDicomFiles]);
 
   const dicomUrls = useMemo(
-    () =>
-      study?.dicomFiles
-        .filter((f) => f.fileName.toUpperCase() !== 'DICOMDIR')
-        .map((f) => `${filesBase}/dicom/${study.id}/${f.fileName}`) ?? [],
+    () => viewableDicomFiles.map((f) => `${filesBase}/dicom/${study!.id}/${f.fileName}`),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [study?.id, study?.dicomFiles?.length]
+    [viewableDicomFiles]
   );
 
   // ────────────────────────────────────────────────────────────────────────────
