@@ -27,6 +27,8 @@ export interface PdfInput {
   conclusion: string;
   patientSummary?: string;
   aiUsed?: boolean;
+  /** A3: Banner shown on parent reports when an addendum was issued. */
+  addendumNotice?: string;
   measurements: Array<{
     label: string;
     value: number;
@@ -211,11 +213,38 @@ export async function generateClinicalPdf(input: PdfInput): Promise<string> {
     if (input.patientSummary) {
       const summaryText = stripHtml(input.patientSummary);
       sectionTitle(doc, 'RESUMEN PARA EL PACIENTE', pageWidth);
-      doc.rect(50, doc.y, pageWidth, estimateTextHeight(summaryText) + 20).fill('#f0fdf4');
+      doc.rect(50, doc.y, pageWidth, estimateTextHeight(summaryText, pageWidth) + 20).fill('#f0fdf4');
       doc.fill('#166534').fontSize(10).font('Helvetica-Oblique')
          .text(summaryText, 62, doc.y + 10, { width: pageWidth - 24, lineGap: 2 });
       doc.moveDown(1.5);
     }
+
+    // ─── A3: ADDENDUM NOTICE — only shown on parent reports that have a correction ──
+    if (input.addendumNotice) {
+      doc.moveDown(0.5);
+      const noticeY = doc.y;
+      doc.rect(50, noticeY, pageWidth, 40).fill('#fef3c7');
+      doc.fill('#92400e').fontSize(9).font('Helvetica-Bold')
+         .text('⚠ AVISO:', 62, noticeY + 8);
+      doc.fill('#78350f').fontSize(9).font('Helvetica')
+         .text(input.addendumNotice, 62, noticeY + 22, { width: pageWidth - 24 });
+      doc.moveDown(2.5);
+    }
+
+    // ─── A1: FIRMA ELECTRÓNICA SIMPLE DISCLAIMER ──────────────────────────────
+    // ANMAT Disposición 7304/2012 / Ley 25.506 compliance note.
+    // TODO (long-term): Replace with PKCS#7/CMS digital signature using X.509
+    // certificates issued by an Argentine government-recognised CA (AFIP, OCA).
+    doc.moveDown(0.5);
+    const disclaimerY = doc.y;
+    doc.rect(50, disclaimerY, pageWidth, 28).fill('#f1f5f9');
+    doc.fill('#475569').fontSize(7.5).font('Helvetica-Oblique')
+       .text(
+         'FIRMA ELECTRÓNICA SIMPLE — Este informe no constituye firma digital con validez legal plena ' +
+         'según Ley 25.506. Válido únicamente para uso interno y como registro clínico preliminar.',
+         62, disclaimerY + 8, { width: pageWidth - 24, lineGap: 1.5 }
+       );
+    doc.moveDown(2);
 
     // ─── FIRMA DEL MÉDICO ─────────────────────────────────────────────────────
     doc.moveDown(2);
@@ -293,8 +322,31 @@ function formatDateStr(s: string): string {
   return new Date(s).toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', year: 'numeric' });
 }
 
-function estimateTextHeight(text: string): number {
-  return Math.ceil(text.length / 90) * 13;
+/**
+ * B5: Estimates the rendered height of a block of text in the PDF.
+ *
+ * Improvement over the basic heuristic: accounts for explicit line breaks,
+ * word-wrap at the given column width (assuming ~6px average char width for
+ * 10pt Helvetica), and a configurable line-height multiplier.
+ *
+ * @param text        - Plain text (no HTML) to estimate height for
+ * @param columnWidth - Available width in PDF points (default 450 for A4 with margins)
+ * @param fontSize    - Font size in points (default 10)
+ * @param lineHeight  - Line height multiplier (default 1.4)
+ */
+function estimateTextHeight(text: string, columnWidth = 450, fontSize = 10, lineHeight = 1.4): number {
+  const avgCharWidth = fontSize * 0.55; // approximate for Helvetica
+  const charsPerLine = Math.max(1, Math.floor(columnWidth / avgCharWidth));
+  const lineHeightPx = fontSize * lineHeight;
+
+  let totalLines = 0;
+  for (const paragraph of text.split('\n')) {
+    // Each paragraph wraps independently; empty paragraphs count as one blank line
+    const wrappedLines = Math.max(1, Math.ceil(paragraph.length / charsPerLine));
+    totalLines += wrappedLines;
+  }
+
+  return Math.ceil(totalLines * lineHeightPx);
 }
 
 /** Strip HTML tags from rich-text content before inserting into PDF.

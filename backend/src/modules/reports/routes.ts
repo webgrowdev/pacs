@@ -141,6 +141,34 @@ reportsRouter.post('/', requireRole('DOCTOR', 'ADMIN') as any, async (req: AuthR
     });
     if (existing) return res.status(409).json({ message: 'Ya existe un informe para este estudio', reportId: existing.id });
 
+    // A6: Check if another doctor already has an active report for this study
+    const parallelReport = await prisma.report.findFirst({
+      where: {
+        studyId:    parsed.data.studyId,
+        doctorId:   { not: req.user!.sub },
+        isAddendum: false,
+        status:     { notIn: [ReportStatus.SIGNED] } // SIGNED reports are final — allow addenda
+      },
+      include: { doctor: { select: { firstName: true, lastName: true } } }
+    });
+
+    if (parallelReport) {
+      const doctorName = `${parallelReport.doctor.firstName} ${parallelReport.doctor.lastName}`;
+      if (!env.ALLOW_PARALLEL_REPORTS) {
+        return res.status(409).json({
+          message: `Este estudio ya tiene un informe activo creado por otro médico. Contacte al Dr. ${doctorName} para coordinar.`,
+          existingReportId:   parallelReport.id,
+          assignedDoctorName: doctorName
+        });
+      }
+      // ALLOW_PARALLEL_REPORTS=true — log warning but allow creation
+      await logAudit(req, 'PARALLEL_REPORT_WARNED', 'REPORT', parallelReport.id, {
+        studyId:    parsed.data.studyId,
+        doctorId:   req.user!.sub,
+        conflictingDoctorId: parallelReport.doctorId
+      });
+    }
+
     const measData = parsed.data.measurements?.map((m) => ({
       ...m,
       coordinatesJson: m.coordinatesJson as any,
@@ -180,8 +208,16 @@ reportsRouter.post('/', requireRole('DOCTOR', 'ADMIN') as any, async (req: AuthR
 
 // ─── Actualizar borrador ──────────────────────────────────────────────────────
 
+/**
+ * PUT /reports/:id — Updates a DRAFT report with optimistic locking (M6).
+ * Requires `updatedAt` in the body to detect concurrent edits.
+ * Wraps measurement soft-delete and re-creation in a single transaction (C6).
+ */
 reportsRouter.put('/:id', requireRole('DOCTOR', 'ADMIN') as any, async (req: AuthRequest, res: any) => {
-  const parsed = draftSchema.partial().omit({ studyId: true }).safeParse(req.body);
+  const bodySchema = draftSchema.partial().omit({ studyId: true }).extend({
+    updatedAt: z.string().optional() // M6: optimistic concurrency token
+  });
+  const parsed = bodySchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ message: 'Payload inválido', errors: parsed.error.flatten() });
 
   try {
@@ -195,81 +231,65 @@ reportsRouter.put('/:id', requireRole('DOCTOR', 'ADMIN') as any, async (req: Aut
       return res.status(422).json({ message: 'El informe ya fue finalizado y no puede ser editado. Use addendum.' });
     }
 
-    const updated = await prisma.report.update({
-      where: { id: String(req.params.id) },
-      data: {
-        findings:       parsed.data.findings,
-        conclusion:     parsed.data.conclusion,
-        patientSummary: parsed.data.patientSummary,
-        aiUsed:         parsed.data.aiUsed,
-        aiModel:        parsed.data.aiModel,
-        aiSessions:     parsed.data.aiSessions as any
-      },
-      include: { measurements: { where: { isActive: true } } }
-    });
-
-    // ── Granular measurement update ──────────────────────────────────────────
-    if (parsed.data.measurements !== undefined) {
-      // Soft-delete all current active measurements with audit trail
-      const current = await prisma.reportMeasurement.findMany({
-        where: { reportId: updated.id, isActive: true }
-      });
-
-      if (current.length > 0) {
-        await prisma.reportMeasurement.updateMany({
-          where: { reportId: updated.id, isActive: true },
-          data:  { isActive: false, deletedAt: new Date(), deletedByUserId: req.user!.sub }
-        });
-        // Log individual deletions for audit
-        for (const m of current) {
-          await logAudit(req, 'MEASUREMENT_SOFT_DELETED', 'MEASUREMENT', m.id, {
-            reportId: m.reportId,
-            label:    m.label,
-            value:    m.value,
-            unit:     m.unit,
-            sopInstanceUid: m.sopInstanceUid
-          });
-        }
-      }
-
-      if (parsed.data.measurements.length > 0) {
-        const newMeasData = parsed.data.measurements.map((m) => ({
-          ...m,
-          coordinatesJson: m.coordinatesJson as any,
-          extraStatsJson:  m.extraStatsJson  as any,
-          reportId:        updated.id,
-          createdByUserId: req.user!.sub,
-          isActive:        true
-        }));
-        const created = await prisma.$transaction(
-          newMeasData.map((d) => prisma.reportMeasurement.create({ data: d }))
-        );
-        // Log individual creations
-        for (const m of created) {
-          await logAudit(req, 'MEASUREMENT_CREATED', 'MEASUREMENT', m.id, {
-            reportId:       m.reportId,
-            label:          m.label,
-            value:          m.value,
-            unit:           m.unit,
-            toolName:       m.toolName,
-            sopInstanceUid: m.sopInstanceUid,
-            instanceNumber: m.instanceNumber,
-            frameIndex:     m.frameIndex
-          });
-        }
-      }
+    // M6: Optimistic concurrency check — reject if another user modified the report
+    if (parsed.data.updatedAt && report.updatedAt.toISOString() !== parsed.data.updatedAt) {
+      return res.status(409).json({ message: 'El informe fue modificado por otro usuario. Recargue e intente nuevamente.' });
     }
 
-    await logAudit(req, 'REPORT_UPDATED', 'REPORT', updated.id, {
+    // C6: Wrap the report update + measurement soft-delete + measurement creation
+    // in a single transaction to prevent partial updates if any step fails.
+    const fresh = await prisma.$transaction(async (tx) => {
+      // Update core report fields
+      const updated = await tx.report.update({
+        where: { id: String(req.params.id) },
+        data: {
+          findings:       parsed.data.findings,
+          conclusion:     parsed.data.conclusion,
+          patientSummary: parsed.data.patientSummary,
+          aiUsed:         parsed.data.aiUsed,
+          aiModel:        parsed.data.aiModel,
+          aiSessions:     parsed.data.aiSessions as any
+        }
+      });
+
+      // ── Granular measurement update (inside transaction) ─────────────────
+      if (parsed.data.measurements !== undefined) {
+        const current = await tx.reportMeasurement.findMany({
+          where: { reportId: updated.id, isActive: true }
+        });
+
+        if (current.length > 0) {
+          await tx.reportMeasurement.updateMany({
+            where: { reportId: updated.id, isActive: true },
+            data:  { isActive: false, deletedAt: new Date(), deletedByUserId: req.user!.sub }
+          });
+        }
+
+        if (parsed.data.measurements.length > 0) {
+          const newMeasData = parsed.data.measurements.map((m) => ({
+            ...m,
+            coordinatesJson: m.coordinatesJson as any,
+            extraStatsJson:  m.extraStatsJson  as any,
+            reportId:        updated.id,
+            createdByUserId: req.user!.sub,
+            isActive:        true
+          }));
+          // C6: Single createMany instead of N individual creates
+          await tx.reportMeasurement.createMany({ data: newMeasData });
+        }
+      }
+
+      return tx.report.findUnique({
+        where:   { id: updated.id },
+        include: { measurements: { where: { isActive: true } }, keyImages: true }
+      });
+    });
+
+    await logAudit(req, 'REPORT_UPDATED', 'REPORT', String(req.params.id), {
       aiUsed:           parsed.data.aiUsed,
       measurementCount: parsed.data.measurements?.length ?? 0
     });
 
-    // Return fresh data with active measurements
-    const fresh = await prisma.report.findUnique({
-      where:   { id: updated.id },
-      include: { measurements: { where: { isActive: true } }, keyImages: true }
-    });
     return res.json(fresh);
   } catch (err) {
     console.error('[REPORTS/PUT]', err);
@@ -349,6 +369,12 @@ reportsRouter.post('/:id/finalize', requireRole('DOCTOR', 'ADMIN') as any, async
     });
     await prisma.study.update({ where: { id: report.studyId }, data: { status: StudyStatus.REPORTED } });
 
+    // A3: If this is an addendum being finalized, regenerate the parent report's PDF
+    // with a banner indicating the correction so patients see the updated version.
+    if (report.isAddendum && report.parentReportId) {
+      await regenerateParentPdfWithAddendumBanner(report.parentReportId, report.id, report.versionNumber);
+    }
+
     const patientAccess = await prisma.patientPortalAccess.findUnique({ where: { patientId: patient.id } });
     if (patientAccess) {
       await createNotification(patientAccess.userId, 'Nuevo informe disponible', 'Su informe médico fue publicado en el portal.', 'REPORT_PUBLISHED').catch(() => {});
@@ -374,6 +400,17 @@ reportsRouter.post('/:id/finalize', requireRole('DOCTOR', 'ADMIN') as any, async
 
 // ─── Firmar informe ───────────────────────────────────────────────────────────
 
+/**
+ * POST /reports/:id/sign — Signs a FINAL report with a SHA-256 content hash.
+ *
+ * A1 - DISCLAIMER: This constitutes a "firma electrónica simple" under Argentine
+ * Law 25.506. It is NOT a legally valid digital signature (firma digital) as
+ * defined by ANMAT Disposición 7304/2012, which requires X.509 certificates
+ * issued by a CA recognised by the Argentine government (AFIP, OCA, etc.).
+ *
+ * TODO (long-term): Integrate with a PKCS#7/CMS signing workflow using
+ * doctor-specific certificates for full Ley 25.506 compliance.
+ */
 reportsRouter.post('/:id/sign', requireRole('DOCTOR', 'ADMIN') as any, async (req: AuthRequest, res: any) => {
   try {
     const report = await prisma.report.findUnique({ where: { id: String(req.params.id) } });
@@ -395,20 +432,27 @@ reportsRouter.post('/:id/sign', requireRole('DOCTOR', 'ADMIN') as any, async (re
       data:  { status: ReportStatus.SIGNED, signatureHash: contentHash }
     });
 
+    // A3: If this is an addendum being signed, regenerate the parent PDF
+    if (report.isAddendum && report.parentReportId) {
+      await regenerateParentPdfWithAddendumBanner(report.parentReportId, report.id, report.versionNumber);
+    }
+
     await logAudit(req, 'REPORT_SIGNED', 'REPORT', report.id, {
       doctorId:    req.user!.sub,
       contentHash,
       signedAt:    new Date().toISOString()
     });
 
-    return res.json(updated);
+    // A1: Include the legal disclaimer in the sign response
+    const disclaimer = 'FIRMA ELECTRÓNICA SIMPLE — Este informe no constituye firma digital con validez legal plena según Ley 25.506. Válido únicamente para uso interno y como registro clínico preliminar.';
+    return res.json({ ...updated, disclaimer });
   } catch (err) {
     console.error('[REPORTS/SIGN]', err);
     return res.status(500).json({ message: 'Error al firmar informe' });
   }
 });
 
-// ─── Addendum — corrige informe firmado sin sobreescribirlo ──────────────────
+// ─── Addendum — corrige informe finalizado o firmado sin sobreescribirlo ──────
 
 const addendumSchema = z.object({
   findings:      z.string().min(5).max(10000),
@@ -434,8 +478,10 @@ reportsRouter.post('/:id/addendum', requireRole('DOCTOR', 'ADMIN') as any, async
     if (req.user?.role === 'DOCTOR' && parent.doctorId !== req.user.sub) {
       return res.status(403).json({ message: 'No autorizado para crear addendum en este informe' });
     }
-    if (parent.status !== ReportStatus.SIGNED) {
-      return res.status(422).json({ message: 'Solo se puede crear addendum sobre informes firmados' });
+    // A2: Allow addendum on both SIGNED and FINAL status reports.
+    // FINAL reports are already visible to patients — corrections must be possible.
+    if (parent.status !== ReportStatus.SIGNED && parent.status !== ReportStatus.FINAL) {
+      return res.status(422).json({ message: 'Solo se puede crear addendum sobre informes finalizados o firmados' });
     }
 
     const measData = parsed.data.measurements?.map((m) => ({
@@ -484,3 +530,70 @@ reportsRouter.post('/:id/addendum', requireRole('DOCTOR', 'ADMIN') as any, async
   }
 });
 
+// ─── A3: Helper — regenerate parent PDF with addendum banner ──────────────────
+
+/**
+ * When an addendum is finalized or signed, regenerate the parent report's PDF
+ * with a visible banner informing the patient that a correction was issued.
+ * This ensures any cached/downloaded copies of the original PDF are superseded.
+ *
+ * A3 — ANMAT compliance: patient must be informed when a published report is corrected.
+ */
+async function regenerateParentPdfWithAddendumBanner(
+  parentReportId: string,
+  addendumId:     string,
+  addendumVersion: number
+): Promise<void> {
+  try {
+    const parent = await prisma.report.findUnique({
+      where: { id: parentReportId },
+      include: {
+        study:  { include: { patient: true } },
+        doctor: { select: { id: true, firstName: true, lastName: true, licenseNumber: true, specialty: true } },
+        measurements: { where: { isActive: true } }
+      }
+    });
+    if (!parent || !parent.pdfPath) return;
+
+    const { patient } = parent.study;
+    const addendumDate = new Date().toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    const addendumNotice = `ATENCIÓN: Este informe fue corregido por Addendum Nº ${addendumVersion} el ${addendumDate}. Consulte el informe ${addendumId.slice(0, 8).toUpperCase()} para la versión actualizada.`;
+
+    await generateClinicalPdf({
+      reportId:             parent.id,
+      patientName:          `${patient.firstName} ${patient.lastName}`,
+      patientCode:          patient.internalCode,
+      patientDni:           patient.documentId,
+      patientCuil:          patient.cuil || undefined,
+      patientDob:           patient.dateOfBirth?.toISOString(),
+      patientSex:           patient.sex,
+      healthInsurance:      patient.healthInsurance || undefined,
+      healthInsurancePlan:  patient.healthInsurancePlan || undefined,
+      healthInsuranceMemberId: patient.healthInsuranceMemberId || undefined,
+      studyDate:            parent.study.studyDate?.toISOString(),
+      studyModality:        parent.study.modality,
+      studyDescription:     parent.study.description || parent.study.modality,
+      requestingDoctorName: parent.study.requestingDoctorName || undefined,
+      insuranceOrderNumber: parent.study.insuranceOrderNumber || undefined,
+      doctorName:           `${parent.doctor.firstName} ${parent.doctor.lastName}`,
+      doctorLicense:        (parent.doctor as any).licenseNumber || undefined,
+      doctorSpecialty:      (parent.doctor as any).specialty || undefined,
+      findings:             parent.findings,
+      conclusion:           parent.conclusion,
+      patientSummary:       parent.patientSummary || undefined,
+      aiUsed:               parent.aiUsed,
+      measurements:         parent.measurements.map((m) => ({
+        label:          m.label,
+        value:          m.value,
+        unit:           m.unit,
+        sopInstanceUid: m.sopInstanceUid ?? undefined,
+        instanceNumber: m.instanceNumber ?? undefined,
+        frameIndex:     m.frameIndex ?? undefined
+      })),
+      addendumNotice
+    });
+  } catch (err) {
+    // Non-fatal — log but don't fail the main request
+    console.error('[REPORTS/ADDENDUM-BANNER] Error al regenerar PDF padre:', err);
+  }
+}

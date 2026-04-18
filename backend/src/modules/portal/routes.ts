@@ -35,7 +35,8 @@ portalRouter.get('/my-results', requireRole('PATIENT') as any, async (req: AuthR
             status: true,
             finalizedAt: true,
             pdfPath: true,
-            conclusion: true,
+            // A5: conclusion is NOT returned to the patient portal.
+            // patientSummary is the approved patient-facing text.
             patientSummary: true,
             doctor: { select: { firstName: true, lastName: true } }
           }
@@ -58,9 +59,12 @@ portalRouter.get('/my-results', requireRole('PATIENT') as any, async (req: AuthR
               id:             s.reports[0].id,
               status:         s.reports[0].status,
               finalizedAt:    s.reports[0].finalizedAt,
-              conclusion:     s.reports[0].conclusion,
-              patientSummary: s.reports[0].patientSummary,
-              doctorName:     `${s.reports[0].doctor.firstName} ${s.reports[0].doctor.lastName}`,
+              // A5: If patientSummary is empty, return a generic message instead of
+              // exposing the raw medical conclusion to the patient.
+              patientSummary: s.reports[0].patientSummary?.trim()
+                ? s.reports[0].patientSummary
+                : 'Su informe ha sido emitido. Por favor consulte con su médico para la interpretación de los resultados.',
+              doctorName: `${s.reports[0].doctor.firstName} ${s.reports[0].doctor.lastName}`,
               pdfUrl: s.reports[0].pdfPath
                 ? toFileUrl(s.reports[0].pdfPath, env.APP_BASE_URL)
                 : null

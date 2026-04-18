@@ -2,8 +2,7 @@ import { Router } from 'express';
 import multer from 'multer';
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import * as tar from 'tar';
 import AdmZip from 'adm-zip';
 import dicomParser from 'dicom-parser';
 import { z } from 'zod';
@@ -14,8 +13,6 @@ import { studyStoragePath } from '../../storage/file-storage.js';
 import { logAudit } from '../../middleware/audit.js';
 import { createNotification } from '../notifications/service.js';
 import { sendStudyAssignedEmail } from '../../utils/email.js';
-
-const execFileAsync = promisify(execFile);
 
 const upload = multer({
   dest: path.resolve(process.cwd(), 'storage/tmp'),
@@ -176,7 +173,8 @@ studiesRouter.get('/:id', requireRole('ADMIN', 'DOCTOR') as any, async (req: Aut
 // Schema de carga de estudio
 const uploadSchema = z.object({
   patientId: z.string().min(5),
-  modality: z.string().min(1).max(10),
+  // M1: Use the canonical modality enum — rejects invalid strings like "RAD", "IMG", etc.
+  modality: z.enum(VALID_MODALITIES as unknown as [string, ...string[]]),
   studyDate: z.string().refine((v) => !isNaN(Date.parse(v)), { message: 'Fecha inválida' }),
   description: z.string().max(500).optional(),
   assignedDoctorId: z.string().optional(),
@@ -255,6 +253,11 @@ studiesRouter.post('/upload', requireRole('ADMIN', 'DOCTOR') as any, upload.arra
             continue;
           }
           const entryData = entry.getData();
+          // M3: Validate DICOM preamble (bytes 128–131 must equal 'DICM')
+          if (!isDicomFile(entryData)) {
+            errors.push(`${name} — Archivo no es un DICOM válido (preamble inválido)`);
+            continue;
+          }
           const parsed = safeParseDicom(entryData);
           const out = path.join(storageFolder, name);
           fs.writeFileSync(out, entryData);
@@ -267,23 +270,27 @@ studiesRouter.post('/upload', requireRole('ADMIN', 'DOCTOR') as any, upload.arra
         lowerName.endsWith('.tbz')     || lowerName.endsWith('.tar.gz') ||
         lowerName.endsWith('.tgz')     || lowerName.endsWith('.tar')
       ) {
-        // ── TAR (bz2 / gz / plain) — uses system tar for bzip2 support ──────
+        // ── TAR (bz2 / gz / plain) — uses node-tar (cross-platform, no shell dependency) ──
         const extractDir = path.join(
           path.resolve(process.cwd(), 'storage/tmp'),
           `tar_${Date.now()}_${Math.random().toString(36).slice(2)}`
         );
         fs.mkdirSync(extractDir, { recursive: true });
         try {
-          // -xf auto-detects gzip and bzip2 on modern tar (macOS & GNU)
-          await execFileAsync('tar', ['-xf', file.path, '-C', extractDir], {
-            timeout: 120_000 // 2 min max, prevents tar bombs hanging the server
-          });
+          // M2: node-tar handles gzip, bzip2 and plain tar natively
+          // without relying on a system 'tar' binary (cross-platform safe).
+          await tar.x({ file: file.path, cwd: extractDir });
           const dcmFiles = walkDicomFiles(extractDir);
           if (dcmFiles.length === 0) {
             console.warn('[STUDIES/UPLOAD tar] No se encontraron archivos DICOM en', file.originalname);
           }
           for (const dcmPath of dcmFiles) {
             const data = fs.readFileSync(dcmPath);
+            // M3: Validate DICOM preamble before persisting
+            if (!isDicomFile(data)) {
+              errors.push(`${path.basename(dcmPath)} — Archivo no es un DICOM válido (preamble inválido)`);
+              continue;
+            }
             const parsed = safeParseDicom(data);
             // Flatten name: use only the basename to avoid path traversal
             const name = path.basename(dcmPath);
@@ -299,6 +306,11 @@ studiesRouter.post('/upload', requireRole('ADMIN', 'DOCTOR') as any, upload.arra
       } else {
         // ── Single DICOM file ──────────────────────────────────────────────
         const data = fs.readFileSync(file.path);
+        // M3: Validate DICOM preamble before persisting
+        if (!isDicomFile(data)) {
+          errors.push(`${file.originalname} — Archivo no es un DICOM válido (preamble inválido)`);
+          continue;
+        }
         const parsed = safeParseDicom(data);
         // Security: use basename only — prevents path traversal via originalname
         const safeName = path.basename(file.originalname);
@@ -411,3 +423,62 @@ function safeParseDicom(buffer: Buffer) {
     };
   }
 }
+
+/**
+ * M3: Validates the DICOM preamble (Part 10 format).
+ * A valid DICOM file has the ASCII bytes 'D','I','C','M' at offsets 128–131.
+ * Files that fail this check are not persisted to the medical storage.
+ */
+function isDicomFile(buffer: Buffer): boolean {
+  if (buffer.length < 132) return false;
+  return (
+    buffer[128] === 0x44 && // 'D'
+    buffer[129] === 0x49 && // 'I'
+    buffer[130] === 0x43 && // 'C'
+    buffer[131] === 0x4d    // 'M'
+  );
+}
+
+// ─── M5: Patient reassignment ─────────────────────────────────────────────────
+
+/**
+ * PATCH /studies/:id/patient — Admin-only endpoint to reassign a study to a
+ * different patient. Useful when a study is uploaded with the wrong patient ID.
+ * Logs the change to the audit log with old and new patient IDs.
+ */
+studiesRouter.patch('/:id/patient', requireRole('ADMIN') as any, async (req: AuthRequest, res: any) => {
+  const { patientId } = req.body;
+  if (!patientId || typeof patientId !== 'string') {
+    return res.status(400).json({ message: 'Se requiere patientId' });
+  }
+
+  try {
+    const [study, patient] = await Promise.all([
+      prisma.study.findUnique({ where: { id: String(req.params.id) } }),
+      prisma.patient.findUnique({ where: { id: patientId } })
+    ]);
+
+    if (!study) return res.status(404).json({ message: 'Estudio no encontrado' });
+    if (!patient) return res.status(404).json({ message: 'Paciente no encontrado' });
+    if (study.patientId === patientId) {
+      return res.status(400).json({ message: 'El estudio ya está asignado a este paciente' });
+    }
+
+    const oldPatientId = study.patientId;
+    const updated = await prisma.study.update({
+      where: { id: study.id },
+      data:  { patientId }
+    });
+
+    await logAudit(req, 'STUDY_PATIENT_REASSIGNED', 'STUDY', study.id, {
+      oldPatientId,
+      newPatientId: patientId
+    });
+
+    return res.json(updated);
+  } catch (err: any) {
+    if (err?.code === 'P2025') return res.status(404).json({ message: 'Estudio no encontrado' });
+    console.error('[STUDIES/PATCH/PATIENT]', err);
+    return res.status(500).json({ message: 'Error al reasignar paciente' });
+  }
+});

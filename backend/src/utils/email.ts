@@ -104,3 +104,31 @@ export async function sendPortalAccessEmail(
     `
   });
 }
+
+// ─── Password reset (A4) ──────────────────────────────────────────────────────
+// SECURITY: Email contains a single-use reset link — not the new password.
+//           The link expires in 1 hour.
+export async function sendPasswordResetEmail(
+  email: string,
+  firstName: string,
+  rawToken: string
+): Promise<void> {
+  const baseUrl   = env.PORTAL_BASE_URL ?? env.APP_BASE_URL;
+  const resetUrl  = `${baseUrl}/reset-password?token=${encodeURIComponent(rawToken)}`;
+  await sendEmail({
+    to:      email,
+    subject: '[PACSMed] Recuperación de contraseña',
+    html: `
+      <p>Hola ${firstName},</p>
+      <p>Recibimos una solicitud para restablecer la contraseña de su cuenta PACSMed.</p>
+      <p>Haga clic en el siguiente enlace para establecer una nueva contraseña:</p>
+      <p><a href="${resetUrl}">${resetUrl}</a></p>
+      <p><strong>Este enlace expira en 1 hora y solo puede usarse una vez.</strong></p>
+      <hr/>
+      <p><small>
+        Si no solicitó este restablecimiento, ignore este correo — su contraseña no será cambiada.
+        Si le preocupa la seguridad de su cuenta, contáctese con el administrador del sistema.
+      </small></p>
+    `
+  });
+}

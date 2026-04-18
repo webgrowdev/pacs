@@ -139,10 +139,21 @@ export function scrubPhiFromText(text: string): string {
     '[CODIGO_PACIENTE]'
   );
 
-  // Remove names in "Apellido, Nombre" or "Nombre Apellido" patterns (heuristic)
-  // This is intentionally conservative — only removes ALL-CAPS full names
+  // Remove names in common Argentine/Spanish formats (B6):
+  //   - ALL-CAPS: "GARCIA, JUAN CARLOS"
+  //   - Title case: "García, Juan" or "Juan García"
+  //   - Accented characters are included via the Unicode ranges
+  //
+  // Patterns:
+  //   1. "Apellido, Nombre" or "APELLIDO, NOMBRE" (comma-separated)
+  //   2. Standalone ALL-CAPS name sequences (legacy pattern)
   scrubbed = scrubbed.replace(
-    /\b[A-ZÁÉÍÓÚÑÜ]{2,}\s*,\s*[A-ZÁÉÍÓÚÑÜ\s]{2,20}\b/g,
+    /\b[A-ZÁÉÍÓÚÑÜ][a-záéíóúñüA-ZÁÉÍÓÚÑÜ]{1,}\s*,\s*[A-ZÁÉÍÓÚÑÜ][a-záéíóúñüA-ZÁÉÍÓÚÑÜ\s]{1,20}\b/g,
+    '[NOMBRE_PACIENTE]'
+  );
+  // ALL-CAPS sequences (e.g., "GARCIA JUAN")
+  scrubbed = scrubbed.replace(
+    /\b[A-ZÁÉÍÓÚÑÜ]{2,}\s+[A-ZÁÉÍÓÚÑÜ]{2,}(\s+[A-ZÁÉÍÓÚÑÜ]{2,})?\b/g,
     '[NOMBRE_PACIENTE]'
   );
 

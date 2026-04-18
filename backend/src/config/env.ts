@@ -24,8 +24,11 @@ const schema = z.object({
   DICOM_AE_TITLE: z.string().default('PACS_SERVER'),
   // DICOMweb auth — Bearer token for imaging equipment
   DICOM_SYSTEM_TOKEN: z.string().optional(),
-  // DICOMweb auth — IP allowlist (comma-separated, use * to allow all — INSECURE)
+  // DICOMweb auth — IP allowlist (comma-separated — do NOT use * in production)
   DICOM_ALLOWED_IPS: z.string().optional(),
+  // A6: Allow multiple doctors to create independent reports for the same study.
+  // Default false — set to true only with explicit institutional policy approval.
+  ALLOW_PARALLEL_REPORTS: z.coerce.boolean().default(false),
   // OpenAI — REQUIRES signed HIPAA BAA before sending real PHI
   // See: https://openai.com/enterprise-privacy
   OPENAI_API_KEY: z.string().optional(),
