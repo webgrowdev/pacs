@@ -7,7 +7,7 @@ import { rateLimit } from 'express-rate-limit';
 import { prisma } from '../../config/prisma.js';
 import { env } from '../../config/env.js';
 import { signAccessToken, signRefreshToken } from '../../utils/jwt.js';
-import { requireAuth, AuthRequest } from '../../middleware/auth.js';
+import { requireAuth, invalidateAuthCache, AuthRequest } from '../../middleware/auth.js';
 import { logAudit } from '../../middleware/audit.js';
 import { validatePasswordComplexity, generateSecureToken } from '../../utils/security.js';
 import { sendPasswordResetEmail } from '../../utils/email.js';
@@ -215,6 +215,9 @@ authRouter.post('/change-password', requireAuth as any, async (req: AuthRequest,
       data:  { revokedAt: now }
     });
 
+    // N1: Invalidate the auth cache so the next request re-fetches the new passwordChangedAt
+    invalidateAuthCache(user.id);
+
     // Clear the current refresh cookie so the client knows to re-authenticate
     res.clearCookie(REFRESH_COOKIE_NAME, { path: '/api/auth' });
 
@@ -362,6 +365,9 @@ authRouter.post(
         where: { userId: tokenRecord.userId, revokedAt: null },
         data:  { revokedAt: now }
       });
+
+      // N1: Invalidate the auth cache so the next request re-fetches the new passwordChangedAt
+      invalidateAuthCache(tokenRecord.userId);
 
       await logAudit(req, 'PASSWORD_RESET_COMPLETED', 'USER', tokenRecord.userId);
       return res.json({ message: 'Contraseña actualizada correctamente. Por favor inicie sesión.' });

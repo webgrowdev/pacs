@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import { prisma } from '../../config/prisma.js';
-import { requireAuth, requireRole, AuthRequest } from '../../middleware/auth.js';
+import { requireAuth, requireRole, invalidateAuthCache, AuthRequest } from '../../middleware/auth.js';
 import { logAudit } from '../../middleware/audit.js';
 import { toFileUrl } from '../../storage/file-storage.js';
 import { env } from '../../config/env.js';
@@ -231,6 +231,9 @@ portalRouter.delete('/admin/revoke/:patientId', requireRole('ADMIN') as any, asy
       prisma.patientPortalAccess.delete({ where: { patientId } }),
       prisma.user.update({ where: { id: access.userId }, data: { isActive: false } })
     ]);
+
+    // N1: Invalidate the auth cache so the deactivated user is rejected on their next request
+    invalidateAuthCache(access.userId);
 
     await logAudit(req, 'PORTAL_ACCESS_REVOKED', 'PATIENT', patientId, { userId: access.userId });
     return res.json({ message: 'Acceso revocado exitosamente' });

@@ -4,6 +4,54 @@ import { prisma } from '../config/prisma.js';
 
 export type AuthRequest = Request & { user?: { sub: string; role: string; email: string; iat?: number } };
 
+/** TTL for the per-user auth cache (milliseconds). */
+const AUTH_CACHE_TTL_MS = 60_000;
+
+/** Interval at which expired cache entries are swept (milliseconds). */
+const AUTH_CACHE_GC_INTERVAL_MS = 5 * 60_000; // 5 minutes
+
+interface AuthCacheEntry {
+  passwordChangedAt: Date | null;
+  isActive: boolean;
+  expiresAt: number;
+}
+
+/**
+ * Short-lived in-memory cache that stores user auth fields keyed by user ID.
+ * Reduces the extra DB query introduced by the C3 password-change check from
+ * one per request down to at most one per TTL window per user.
+ *
+ * Call invalidateAuthCache(userId) whenever a user's password or active status
+ * changes so that the next request re-fetches fresh data immediately.
+ *
+ * NOTE: This cache is process-local. In a multi-process / clustered deployment
+ * each worker maintains its own copy, so a cache invalidation in one worker
+ * does NOT propagate to sibling workers.  The 60-second TTL bounds the window
+ * of stale data to at most 60 s across all workers even without cross-process
+ * signalling.  For stricter requirements, replace this with a shared cache
+ * (e.g. Redis) and publish invalidation events via pub/sub.
+ */
+const _authCache = new Map<string, AuthCacheEntry>();
+
+/** Periodically remove expired entries to prevent unbounded Map growth. */
+const _authCacheGcTimer = setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of _authCache) {
+    if (entry.expiresAt < now) {
+      _authCache.delete(key);
+    }
+  }
+}, AUTH_CACHE_GC_INTERVAL_MS);
+
+// Allow Node.js to exit even while this timer is active (tests / graceful shutdown)
+if (_authCacheGcTimer.unref) {
+  _authCacheGcTimer.unref();
+}
+
+export function invalidateAuthCache(userId: string): void {
+  _authCache.delete(userId);
+}
+
 /**
  * Verifies the Bearer access token and, for C3 compliance, checks that it was
  * issued AFTER the most recent password change.  A token issued before a password
@@ -24,15 +72,32 @@ export async function requireAuth(req: AuthRequest, res: Response, next: NextFun
 
     // C3: If the user changed their password, tokens issued before that moment are invalid.
     if (payload.iat && payload.sub) {
-      const user = await prisma.user.findUnique({
-        where: { id: payload.sub },
-        select: { passwordChangedAt: true, isActive: true }
-      });
-      if (!user || !user.isActive) {
+      const now = Date.now();
+      let cached = _authCache.get(payload.sub);
+
+      if (!cached || cached.expiresAt < now) {
+        const user = await prisma.user.findUnique({
+          where: { id: payload.sub },
+          select: { passwordChangedAt: true, isActive: true }
+        });
+
+        if (!user) {
+          return res.status(401).json({ message: 'Token inválido' });
+        }
+
+        cached = {
+          passwordChangedAt: user.passwordChangedAt,
+          isActive: user.isActive,
+          expiresAt: now + AUTH_CACHE_TTL_MS
+        };
+        _authCache.set(payload.sub, cached);
+      }
+
+      if (!cached.isActive) {
         return res.status(401).json({ message: 'Token inválido' });
       }
-      if (user.passwordChangedAt) {
-        const changedAtMs = user.passwordChangedAt.getTime();
+      if (cached.passwordChangedAt) {
+        const changedAtMs = cached.passwordChangedAt.getTime();
         const issuedAtMs  = payload.iat * 1000;
         if (issuedAtMs < changedAtMs) {
           return res.status(401).json({ message: 'Sesión invalidada. Por favor inicie sesión nuevamente.' });
