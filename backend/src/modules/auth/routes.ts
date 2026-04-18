@@ -281,10 +281,11 @@ authRouter.post(
     // Always respond 200 — do not reveal whether the email exists (HIPAA anti-enumeration)
     const genericOk = () => res.json({ message: 'Si el correo existe en el sistema, recibirá un enlace de recuperación.' });
 
-    if (!email || typeof email !== 'string') return genericOk();
+    if (!email || typeof email !== 'string' || !email.trim()) return genericOk();
+    const normalizedEmail = email.trim().toLowerCase();
 
     try {
-      const user = await prisma.user.findUnique({ where: { email: email.toLowerCase().trim() } });
+      const user = await prisma.user.findUnique({ where: { email: normalizedEmail } });
       if (!user || !user.isActive) return genericOk();
 
       // Generate a cryptographically secure raw token

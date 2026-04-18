@@ -287,6 +287,19 @@ app.listen(Number(env.PORT), () => {
 });
 
 // ─── DICOMweb auth middleware ─────────────────────────────────────────────────
+// Precompute the allowed IP set once at startup to avoid repeated string parsing per request.
+// C5: '*' is excluded from the allowed set — it would disable all authentication.
+const _allowedDicomIps: ReadonlySet<string> = (() => {
+  if (!env.DICOM_ALLOWED_IPS) return new Set<string>();
+  const ips = env.DICOM_ALLOWED_IPS.split(',').map((ip) => ip.trim()).filter((ip) => ip && ip !== '*');
+  if (env.DICOM_ALLOWED_IPS.includes('*')) {
+    console.warn(
+      '[DICOM-AUTH] ⚠️  DICOM_ALLOWED_IPS contains "*" which is no longer supported ' +
+      'and will NOT grant access. Remove "*" and list explicit IP addresses, or configure DICOM_SYSTEM_TOKEN.'
+    );
+  }
+  return new Set(ips);
+})();
 
 function dicomWebAuthMiddleware(req: AuthRequest, res: Response, next: NextFunction) {
   // Option A: Bearer token authentication
@@ -311,20 +324,9 @@ function dicomWebAuthMiddleware(req: AuthRequest, res: Response, next: NextFunct
   // X-Forwarded-For, which is trivially spoofable by any client. If the server
   // is behind a trusted reverse proxy, configure DICOM_SYSTEM_TOKEN instead.
   // C5: The wildcard '*' is no longer accepted — it disabled all authentication.
-  if (env.DICOM_ALLOWED_IPS) {
-    const allowedIps = env.DICOM_ALLOWED_IPS.split(',').map((ip) => ip.trim());
-    const clientIp   = (req.socket?.remoteAddress ?? '').replace(/^::ffff:/, ''); // strip IPv6-mapped IPv4
-
-    // C5: Warn loudly if '*' is still in the list (misconfiguration guard)
-    if (allowedIps.includes('*')) {
-      console.warn(
-        '[DICOM-AUTH] ⚠️  DICOM_ALLOWED_IPS contains "*" which is no longer supported ' +
-        'and will NOT grant access. Remove "*" and list explicit IP addresses, or configure DICOM_SYSTEM_TOKEN.'
-      );
-    }
-
-    // Only match explicit IP addresses — '*' is intentionally excluded
-    if (allowedIps.filter((ip) => ip !== '*').includes(clientIp)) {
+  if (_allowedDicomIps.size > 0) {
+    const clientIp = (req.socket?.remoteAddress ?? '').replace(/^::ffff:/, ''); // strip IPv6-mapped IPv4
+    if (_allowedDicomIps.has(clientIp)) {
       return next();
     }
   }

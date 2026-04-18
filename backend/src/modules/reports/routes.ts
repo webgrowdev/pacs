@@ -286,8 +286,11 @@ reportsRouter.put('/:id', requireRole('DOCTOR', 'ADMIN') as any, async (req: Aut
     });
 
     await logAudit(req, 'REPORT_UPDATED', 'REPORT', String(req.params.id), {
-      aiUsed:           parsed.data.aiUsed,
-      measurementCount: parsed.data.measurements?.length ?? 0
+      aiUsed:              parsed.data.aiUsed,
+      measurementCount:    parsed.data.measurements?.length ?? 0,
+      // C6: Measurements were updated atomically in a transaction.
+      // Audit captures the final count rather than per-measurement events.
+      measurementsUpdated: parsed.data.measurements !== undefined
     });
 
     return res.json(fresh);
@@ -337,8 +340,8 @@ reportsRouter.post('/:id/finalize', requireRole('DOCTOR', 'ADMIN') as any, async
       requestingDoctorName: report.study.requestingDoctorName || undefined,
       insuranceOrderNumber: report.study.insuranceOrderNumber || undefined,
       doctorName:           `${report.doctor.firstName} ${report.doctor.lastName}`,
-      doctorLicense:        (report.doctor as any).licenseNumber || undefined,
-      doctorSpecialty:      (report.doctor as any).specialty || undefined,
+      doctorLicense:        report.doctor.licenseNumber || undefined,
+      doctorSpecialty:      report.doctor.specialty || undefined,
       findings:             report.findings,
       conclusion:           report.conclusion,
       patientSummary:       report.patientSummary || undefined,
@@ -576,8 +579,8 @@ async function regenerateParentPdfWithAddendumBanner(
       requestingDoctorName: parent.study.requestingDoctorName || undefined,
       insuranceOrderNumber: parent.study.insuranceOrderNumber || undefined,
       doctorName:           `${parent.doctor.firstName} ${parent.doctor.lastName}`,
-      doctorLicense:        (parent.doctor as any).licenseNumber || undefined,
-      doctorSpecialty:      (parent.doctor as any).specialty || undefined,
+      doctorLicense:        parent.doctor.licenseNumber || undefined,
+      doctorSpecialty:      parent.doctor.specialty || undefined,
       findings:             parent.findings,
       conclusion:           parent.conclusion,
       patientSummary:       parent.patientSummary || undefined,
