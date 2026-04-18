@@ -7,6 +7,9 @@ export type AuthRequest = Request & { user?: { sub: string; role: string; email:
 /** TTL for the per-user auth cache (milliseconds). */
 const AUTH_CACHE_TTL_MS = 60_000;
 
+/** Interval at which expired cache entries are swept (milliseconds). */
+const AUTH_CACHE_GC_INTERVAL_MS = 5 * 60_000; // 5 minutes
+
 interface AuthCacheEntry {
   passwordChangedAt: Date | null;
   isActive: boolean;
@@ -20,8 +23,30 @@ interface AuthCacheEntry {
  *
  * Call invalidateAuthCache(userId) whenever a user's password or active status
  * changes so that the next request re-fetches fresh data immediately.
+ *
+ * NOTE: This cache is process-local. In a multi-process / clustered deployment
+ * each worker maintains its own copy, so a cache invalidation in one worker
+ * does NOT propagate to sibling workers.  The 60-second TTL bounds the window
+ * of stale data to at most 60 s across all workers even without cross-process
+ * signalling.  For stricter requirements, replace this with a shared cache
+ * (e.g. Redis) and publish invalidation events via pub/sub.
  */
 const _authCache = new Map<string, AuthCacheEntry>();
+
+/** Periodically remove expired entries to prevent unbounded Map growth. */
+const _authCacheGcTimer = setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of _authCache) {
+    if (entry.expiresAt < now) {
+      _authCache.delete(key);
+    }
+  }
+}, AUTH_CACHE_GC_INTERVAL_MS);
+
+// Allow Node.js to exit even while this timer is active (tests / graceful shutdown)
+if (_authCacheGcTimer.unref) {
+  _authCacheGcTimer.unref();
+}
 
 export function invalidateAuthCache(userId: string): void {
   _authCache.delete(userId);
@@ -50,7 +75,7 @@ export async function requireAuth(req: AuthRequest, res: Response, next: NextFun
       const now = Date.now();
       let cached = _authCache.get(payload.sub);
 
-      if (!cached || cached.expiresAt <= now) {
+      if (!cached || cached.expiresAt < now) {
         const user = await prisma.user.findUnique({
           where: { id: payload.sub },
           select: { passwordChangedAt: true, isActive: true }
