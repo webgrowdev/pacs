@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import crypto from 'node:crypto';
 import { body, validationResult } from 'express-validator';
 import { rateLimit } from 'express-rate-limit';
 import { prisma } from '../../config/prisma.js';
@@ -8,7 +9,8 @@ import { env } from '../../config/env.js';
 import { signAccessToken, signRefreshToken } from '../../utils/jwt.js';
 import { requireAuth, AuthRequest } from '../../middleware/auth.js';
 import { logAudit } from '../../middleware/audit.js';
-import { validatePasswordComplexity } from '../../utils/security.js';
+import { validatePasswordComplexity, generateSecureToken } from '../../utils/security.js';
+import { sendPasswordResetEmail } from '../../utils/email.js';
 
 // ─── Refresh token cookie settings ───────────────────────────────────────────
 // httpOnly + Secure = XSS cannot read it; SameSite=Strict = CSRF protection
@@ -41,6 +43,26 @@ const refreshLimiter = rateLimit({
   max: 5,
   message: { message: 'Demasiadas solicitudes de refresco de token.' }
 });
+
+// ─── Helper: hash a token for DB storage ─────────────────────────────────────
+/**
+ * Returns the SHA-256 hex digest of a raw token string.
+ * The raw token is never stored — only the hash is persisted (C1, A4).
+ */
+function hashToken(token: string): string {
+  return crypto.createHash('sha256').update(token).digest('hex');
+}
+
+/**
+ * Persists a hashed refresh token record in the database (C1).
+ * @param rawToken - The raw JWT refresh token string
+ * @param userId   - The user the token belongs to
+ */
+async function persistRefreshToken(rawToken: string, userId: string): Promise<void> {
+  const tokenHash = hashToken(rawToken);
+  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
+  await prisma.refreshToken.create({ data: { tokenHash, userId, expiresAt } });
+}
 
 // ─── Login ────────────────────────────────────────────────────────────────────
 authRouter.post(
@@ -80,7 +102,11 @@ authRouter.post(
 
       // Set refresh token as httpOnly cookie — never exposed to JavaScript
       // Access token is returned in body (short-lived, 15min — less sensitive)
-      res.cookie(REFRESH_COOKIE_NAME, signRefreshToken(payload), REFRESH_COOKIE_OPTIONS);
+      const rawRefreshToken = signRefreshToken(payload);
+      res.cookie(REFRESH_COOKIE_NAME, rawRefreshToken, REFRESH_COOKIE_OPTIONS);
+
+      // C1: Persist hashed refresh token record for server-side revocation
+      await persistRefreshToken(rawRefreshToken, user.id);
 
       return res.json({
         accessToken: signAccessToken(payload),
@@ -93,19 +119,20 @@ authRouter.post(
           role: user.role.name
         }
       });
-    } catch (err) {
-      console.error('[AUTH/LOGIN]', err);
+    } catch (err: any) {
+      // B1: Log only code/message — never the full Prisma error (may contain PHI/query values)
+      console.error('[AUTH/LOGIN] code=%s message=%s', err?.code, err?.message);
       return res.status(500).json({ message: 'Error interno al autenticar' });
     }
   }
 );
 
-// ─── Refresh token — reads from httpOnly cookie (preferred) or body (fallback) ─
+// ─── Refresh token — reads ONLY from httpOnly cookie ─────────────────────────
+// C2: The req.body?.refreshToken fallback has been removed — it nullified the
+// httpOnly cookie protection by allowing XSS to re-submit intercepted tokens.
 authRouter.post('/refresh', refreshLimiter, async (req: AuthRequest, res: any) => {
-  // Primary: read from httpOnly cookie (XSS-safe)
-  // Fallback: accept from body for backward-compatibility with non-browser clients
-  const rawToken: string | undefined =
-    req.cookies?.[REFRESH_COOKIE_NAME] ?? req.body?.refreshToken;
+  // Only accept token from httpOnly cookie (XSS-safe)
+  const rawToken: string | undefined = req.cookies?.[REFRESH_COOKIE_NAME];
 
   if (!rawToken || rawToken.length < 20) {
     return res.status(401).json({ message: 'Token de refresco no encontrado' });
@@ -113,13 +140,30 @@ authRouter.post('/refresh', refreshLimiter, async (req: AuthRequest, res: any) =
 
   try {
     const payload = jwt.verify(rawToken, env.JWT_REFRESH_SECRET) as { sub: string; role: string; email: string };
+
+    // C1: Verify the token record exists and has not been revoked
+    const tokenHash   = hashToken(rawToken);
+    const tokenRecord = await prisma.refreshToken.findUnique({ where: { tokenHash } });
+    if (!tokenRecord || tokenRecord.revokedAt !== null || tokenRecord.expiresAt < new Date()) {
+      res.clearCookie(REFRESH_COOKIE_NAME, { path: '/api/auth' });
+      return res.status(401).json({ message: 'Token de refresco inválido o revocado' });
+    }
+
     const user = await prisma.user.findUnique({ where: { id: payload.sub }, include: { role: true } });
     if (!user || !user.isActive) return res.status(401).json({ message: 'Usuario inválido' });
 
     const nextPayload = { sub: user.id, role: user.role.name, email: user.email };
 
-    // Rotate refresh token — old cookie replaced with new one
-    res.cookie(REFRESH_COOKIE_NAME, signRefreshToken(nextPayload), REFRESH_COOKIE_OPTIONS);
+    // C1: Rotate refresh token — revoke old record, issue and persist new one
+    await prisma.refreshToken.update({
+      where: { tokenHash },
+      data:  { revokedAt: new Date() }
+    });
+
+    const newRawToken = signRefreshToken(nextPayload);
+    res.cookie(REFRESH_COOKIE_NAME, newRawToken, REFRESH_COOKIE_OPTIONS);
+    await persistRefreshToken(newRawToken, user.id);
+
     return res.json({ accessToken: signAccessToken(nextPayload) });
   } catch {
     // Clear invalid cookie
@@ -157,15 +201,28 @@ authRouter.post('/change-password', requireAuth as any, async (req: AuthRequest,
     }
 
     const passwordHash = await bcrypt.hash(newPassword, 12);
+    const now = new Date();
+
+    // C3: Set passwordChangedAt to invalidate all existing tokens issued before this moment
     await prisma.user.update({
       where: { id: user.id },
-      data: { passwordHash, mustChangePassword: false }
+      data: { passwordHash, mustChangePassword: false, passwordChangedAt: now }
     });
 
+    // C3: Revoke all active refresh tokens for this user
+    await prisma.refreshToken.updateMany({
+      where: { userId: user.id, revokedAt: null },
+      data:  { revokedAt: now }
+    });
+
+    // Clear the current refresh cookie so the client knows to re-authenticate
+    res.clearCookie(REFRESH_COOKIE_NAME, { path: '/api/auth' });
+
     await logAudit(req, 'PASSWORD_CHANGED', 'USER', user.id);
-    return res.json({ message: 'Contraseña actualizada correctamente' });
-  } catch (err) {
-    console.error('[AUTH/CHANGE-PASSWORD]', err);
+    return res.json({ message: 'Contraseña actualizada correctamente. Por favor inicie sesión nuevamente.' });
+  } catch (err: any) {
+    // B1: Log only code/message — never the full Prisma error
+    console.error('[AUTH/CHANGE-PASSWORD] code=%s message=%s', err?.code, err?.message);
     return res.status(500).json({ message: 'Error al cambiar contraseña' });
   }
 });
@@ -198,7 +255,119 @@ authRouter.get('/me', requireAuth as any, async (req: AuthRequest, res: any) => 
 // ─── Logout ───────────────────────────────────────────────────────────────────
 authRouter.post('/logout', requireAuth as any, async (req: AuthRequest, res: any) => {
   await logAudit(req, 'LOGOUT', 'USER', req.user!.sub).catch(() => {});
+
+  // C1: Revoke the refresh token server-side so it cannot be reused after logout
+  const rawToken: string | undefined = req.cookies?.[REFRESH_COOKIE_NAME];
+  if (rawToken) {
+    const tokenHash = hashToken(rawToken);
+    await prisma.refreshToken
+      .update({ where: { tokenHash }, data: { revokedAt: new Date() } })
+      .catch(() => {}); // ignore if record not found (e.g., already revoked)
+  }
+
   // Clear httpOnly refresh cookie immediately
   res.clearCookie(REFRESH_COOKIE_NAME, { path: '/api/auth' });
   res.json({ message: 'Sesión cerrada correctamente' });
 });
+
+// ─── Forgot password ──────────────────────────────────────────────────────────
+// A4: Generates a single-use reset token, stores a hashed record, and e-mails
+// the reset link. Always returns 200 to prevent user enumeration.
+authRouter.post(
+  '/forgot-password',
+  rateLimit({ windowMs: 15 * 60 * 1000, max: 5, message: { message: 'Demasiadas solicitudes.' } }),
+  async (req: AuthRequest, res: any) => {
+    const { email } = req.body;
+    // Always respond 200 — do not reveal whether the email exists (HIPAA anti-enumeration)
+    const genericOk = () => res.json({ message: 'Si el correo existe en el sistema, recibirá un enlace de recuperación.' });
+
+    if (!email || typeof email !== 'string' || !email.trim()) return genericOk();
+    const normalizedEmail = email.trim().toLowerCase();
+
+    try {
+      const user = await prisma.user.findUnique({ where: { email: normalizedEmail } });
+      if (!user || !user.isActive) return genericOk();
+
+      // Generate a cryptographically secure raw token
+      const rawToken  = generateSecureToken(32);
+      const tokenHash = hashToken(rawToken);
+      const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+
+      // Invalidate any previous unused reset tokens for this user
+      await prisma.passwordResetToken.updateMany({
+        where: { userId: user.id, usedAt: null },
+        data:  { usedAt: new Date() }
+      });
+
+      await prisma.passwordResetToken.create({
+        data: { tokenHash, userId: user.id, expiresAt }
+      });
+
+      // Send reset email — link carries the raw token (not the hash)
+      sendPasswordResetEmail(user.email, user.firstName, rawToken).catch((err) => {
+        console.error('[AUTH/FORGOT-PASSWORD] Error enviando email:', err?.message);
+      });
+
+      await logAudit(req, 'PASSWORD_RESET_REQUESTED', 'USER', user.id, { email });
+      return genericOk();
+    } catch (err: any) {
+      console.error('[AUTH/FORGOT-PASSWORD] code=%s message=%s', err?.code, err?.message);
+      return genericOk(); // Still return 200 to prevent enumeration
+    }
+  }
+);
+
+// ─── Reset password ───────────────────────────────────────────────────────────
+// A4: Validates the single-use token, updates the password, marks token as used,
+// and invalidates all existing sessions for the user.
+authRouter.post(
+  '/reset-password',
+  rateLimit({ windowMs: 15 * 60 * 1000, max: 10, message: { message: 'Demasiadas solicitudes.' } }),
+  async (req: AuthRequest, res: any) => {
+    const { token, newPassword } = req.body;
+    if (!token || !newPassword) {
+      return res.status(400).json({ message: 'Se requiere token y nueva contraseña' });
+    }
+
+    const complexity = validatePasswordComplexity(newPassword);
+    if (!complexity.valid) {
+      return res.status(400).json({ message: 'La contraseña no cumple los requisitos de seguridad', errors: complexity.errors });
+    }
+
+    try {
+      const tokenHash   = hashToken(String(token));
+      const tokenRecord = await prisma.passwordResetToken.findUnique({ where: { tokenHash } });
+
+      if (!tokenRecord || tokenRecord.usedAt !== null || tokenRecord.expiresAt < new Date()) {
+        return res.status(400).json({ message: 'Token inválido, expirado o ya utilizado' });
+      }
+
+      const passwordHash = await bcrypt.hash(newPassword, 12);
+      const now          = new Date();
+
+      // Update password and set passwordChangedAt to invalidate all existing JWTs (C3)
+      await prisma.user.update({
+        where: { id: tokenRecord.userId },
+        data:  { passwordHash, mustChangePassword: false, passwordChangedAt: now }
+      });
+
+      // Mark token as used (single-use enforcement)
+      await prisma.passwordResetToken.update({
+        where: { id: tokenRecord.id },
+        data:  { usedAt: now }
+      });
+
+      // C3: Revoke all active refresh tokens for the user
+      await prisma.refreshToken.updateMany({
+        where: { userId: tokenRecord.userId, revokedAt: null },
+        data:  { revokedAt: now }
+      });
+
+      await logAudit(req, 'PASSWORD_RESET_COMPLETED', 'USER', tokenRecord.userId);
+      return res.json({ message: 'Contraseña actualizada correctamente. Por favor inicie sesión.' });
+    } catch (err: any) {
+      console.error('[AUTH/RESET-PASSWORD] code=%s message=%s', err?.code, err?.message);
+      return res.status(500).json({ message: 'Error al restablecer contraseña' });
+    }
+  }
+);

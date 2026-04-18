@@ -3,10 +3,12 @@ import cors from 'cors';
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
 import path from 'node:path';
+import fs from 'node:fs';
 import { rateLimit } from 'express-rate-limit';
 import { env } from './config/env.js';
 import { requireAuth, AuthRequest } from './middleware/auth.js';
 import { verifyAccessToken } from './utils/jwt.js';
+import { prisma } from './config/prisma.js';
 import { authRouter } from './modules/auth/routes.js';
 import { usersRouter } from './modules/users/routes.js';
 import { patientsRouter } from './modules/patients/routes.js';
@@ -117,30 +119,115 @@ app.get('/health', (_req, res) => {
   });
 });
 
-// ─── Archivos estáticos — autenticación + headers seguros ────────────────────
-// HIPAA §164.308(a)(4): role-based access to patient files
-// PATIENT role is blocked — patients access their own PDFs via the portal API
-// which enforces ownership checks before returning the URL.
-app.use(
-  '/files',
-  requireAuth as any,
-  (req: AuthRequest, res: Response, next: NextFunction) => {
-    // Patients must not be able to fetch arbitrary file paths (other patients' DICOMs)
-    if (req.user?.role === 'PATIENT') {
-      return res.status(403).json({ message: 'Acceso no autorizado' });
-    }
-    next();
-  },
-  express.static(path.resolve(process.cwd(), env.STORAGE_ROOT), {
-    setHeaders: (res) => {
-      res.setHeader('X-Content-Type-Options', 'nosniff');
-      res.setHeader('Cache-Control', 'private, no-store'); // no caching of medical files
-      res.setHeader('Content-Disposition', 'inline');      // prevent download prompts
-    }
-  })
-);
+// ─── Archivos protegidos — autenticación + verificación de ownership ──────────
+// C4: Replaced express.static with a dynamic endpoint that verifies the requesting
+// user owns or has access to the requested file before streaming it.
+// HIPAA §164.308(a)(4): role-based access with ownership enforcement.
+app.get('/files/*', requireAuth as any, async (req: AuthRequest, res: Response) => {
+  const urlPath = (req.params as any)[0] as string; // relative path after /files/
+  if (!urlPath) return res.status(400).json({ message: 'Ruta de archivo inválida' });
 
-// 404 de archivos estáticos
+  // Prevent path traversal attacks
+  const normalizedPath = path.normalize(urlPath).replace(/\\/g, '/');
+  if (normalizedPath.startsWith('..') || normalizedPath.includes('../')) {
+    return res.status(400).json({ message: 'Ruta de archivo inválida' });
+  }
+
+  const storageRoot = path.resolve(process.cwd(), env.STORAGE_ROOT);
+  const absoluteFilePath = path.join(storageRoot, normalizedPath);
+
+  // Ensure the resolved path is within STORAGE_ROOT (second-layer traversal guard)
+  if (!absoluteFilePath.startsWith(storageRoot + path.sep) && absoluteFilePath !== storageRoot) {
+    return res.status(400).json({ message: 'Ruta de archivo inválida' });
+  }
+
+  if (!fs.existsSync(absoluteFilePath)) {
+    return res.status(404).json({ message: 'Archivo no encontrado' });
+  }
+
+  const user = req.user!;
+  const parts = normalizedPath.split('/');
+  const fileType = parts[0]; // 'dicom' or 'pdfs'
+
+  try {
+    if (fileType === 'dicom' && parts.length >= 3) {
+      // URL format: dicom/{studyId}/{filename}
+      const studyId = parts[1];
+      const study = await prisma.study.findUnique({
+        where: { id: studyId },
+        select: { id: true, patientId: true, assignedDoctorId: true }
+      });
+      if (!study) return res.status(404).json({ message: 'Archivo no encontrado' });
+
+      if (user.role === 'ADMIN') {
+        // ADMIN always allowed
+      } else if (user.role === 'DOCTOR') {
+        // DOCTOR: only if assigned to this study OR has a report for it
+        const hasAccess = study.assignedDoctorId === user.sub;
+        if (!hasAccess) {
+          const hasReport = await prisma.report.findFirst({
+            where: { studyId: study.id, doctorId: user.sub }
+          });
+          if (!hasReport) return res.status(403).json({ message: 'No autorizado para acceder a este archivo' });
+        }
+      } else if (user.role === 'PATIENT') {
+        // PATIENT: only if the study belongs to them
+        const access = await prisma.patientPortalAccess.findUnique({ where: { userId: user.sub } });
+        if (!access || access.patientId !== study.patientId) {
+          return res.status(403).json({ message: 'No autorizado para acceder a este archivo' });
+        }
+      } else {
+        return res.status(403).json({ message: 'No autorizado' });
+      }
+
+    } else if (fileType === 'pdfs') {
+      // URL format: pdfs/{reportId}.pdf
+      const filename     = parts[1] ?? '';
+      const reportId     = filename.replace(/\.pdf$/i, '');
+      const report = await prisma.report.findUnique({
+        where: { id: reportId },
+        select: { id: true, doctorId: true, studyId: true, study: { select: { patientId: true } } }
+      });
+      if (!report) return res.status(404).json({ message: 'Archivo no encontrado' });
+
+      if (user.role === 'ADMIN') {
+        // ADMIN always allowed
+      } else if (user.role === 'DOCTOR') {
+        if (report.doctorId !== user.sub) return res.status(403).json({ message: 'No autorizado para acceder a este archivo' });
+      } else if (user.role === 'PATIENT') {
+        const access = await prisma.patientPortalAccess.findUnique({ where: { userId: user.sub } });
+        if (!access || access.patientId !== report.study?.patientId) {
+          return res.status(403).json({ message: 'No autorizado para acceder a este archivo' });
+        }
+      } else {
+        return res.status(403).json({ message: 'No autorizado' });
+      }
+
+    } else {
+      // Unknown file type — block access
+      return res.status(403).json({ message: 'Tipo de archivo no permitido' });
+    }
+
+    // ── Stream the file with secure headers ─────────────────────────────────
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Cache-Control', 'private, no-store'); // no caching of medical files
+
+    // B2: Use 'attachment' disposition for PDFs to prevent accidental display on shared screens
+    if (fileType === 'pdfs') {
+      const reportId = path.basename(normalizedPath, '.pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="informe-${reportId}.pdf"`);
+    } else {
+      res.setHeader('Content-Disposition', 'attachment');
+    }
+
+    res.sendFile(absoluteFilePath);
+  } catch (err) {
+    console.error('[FILES] Error al servir archivo:', err);
+    res.status(500).json({ message: 'Error al obtener archivo' });
+  }
+});
+
+// 404 de archivos
 app.use('/files', (_req, res) => {
   res.status(404).json({ message: 'Archivo no encontrado' });
 });
@@ -200,6 +287,19 @@ app.listen(Number(env.PORT), () => {
 });
 
 // ─── DICOMweb auth middleware ─────────────────────────────────────────────────
+// Precompute the allowed IP set once at startup to avoid repeated string parsing per request.
+// C5: '*' is excluded from the allowed set — it would disable all authentication.
+const _allowedDicomIps: ReadonlySet<string> = (() => {
+  if (!env.DICOM_ALLOWED_IPS) return new Set<string>();
+  const ips = env.DICOM_ALLOWED_IPS.split(',').map((ip) => ip.trim()).filter((ip) => ip && ip !== '*');
+  if (env.DICOM_ALLOWED_IPS.includes('*')) {
+    console.warn(
+      '[DICOM-AUTH] ⚠️  DICOM_ALLOWED_IPS contains "*" which is no longer supported ' +
+      'and will NOT grant access. Remove "*" and list explicit IP addresses, or configure DICOM_SYSTEM_TOKEN.'
+    );
+  }
+  return new Set(ips);
+})();
 
 function dicomWebAuthMiddleware(req: AuthRequest, res: Response, next: NextFunction) {
   // Option A: Bearer token authentication
@@ -223,10 +323,10 @@ function dicomWebAuthMiddleware(req: AuthRequest, res: Response, next: NextFunct
   // Security: use req.socket.remoteAddress (the actual TCP peer) instead of
   // X-Forwarded-For, which is trivially spoofable by any client. If the server
   // is behind a trusted reverse proxy, configure DICOM_SYSTEM_TOKEN instead.
-  if (env.DICOM_ALLOWED_IPS) {
-    const allowedIps = env.DICOM_ALLOWED_IPS.split(',').map((ip) => ip.trim());
+  // C5: The wildcard '*' is no longer accepted — it disabled all authentication.
+  if (_allowedDicomIps.size > 0) {
     const clientIp = (req.socket?.remoteAddress ?? '').replace(/^::ffff:/, ''); // strip IPv6-mapped IPv4
-    if (allowedIps.includes(clientIp) || allowedIps.includes('*')) {
+    if (_allowedDicomIps.has(clientIp)) {
       return next();
     }
   }

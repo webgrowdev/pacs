@@ -57,6 +57,7 @@ model User {
   specialty           String?                          // Especialidad médica
   isActive            Boolean     @default(true)
   mustChangePassword  Boolean     @default(false)
+  passwordChangedAt   DateTime?                        // C3: Updated on each password change to invalidate old tokens
   roleId              String
   role                Role        @relation(fields: [roleId], references: [id])
   doctorReports       Report[]    @relation("DoctorReports")
@@ -65,6 +66,8 @@ model User {
   patientAccess       PatientPortalAccess?
   auditLogs           AuditLog[]
   notifications       Notification[]
+  refreshTokens       RefreshToken[]
+  passwordResetTokens PasswordResetToken[]
   createdAt           DateTime    @default(now())
   updatedAt           DateTime    @updatedAt
 }
@@ -107,11 +110,16 @@ model Study {
   source          StudySource     @default(MANUAL_UPLOAD)
   studyInstanceUid String?
   callingAeTitle  String?
+  // B7: Worklist claim mechanism — tracks which doctor is actively reading the study
+  claimedByDoctorId String?
+  claimedAt         DateTime?
   series          StudySeries[]
   dicomFiles      DicomFile[]
   reports         Report[]
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
+
+  @@index([patientId])
 }
 
 model StudySeries {
@@ -179,6 +187,8 @@ model Report {
   keyImages         KeyImage[]
   createdAt         DateTime             @default(now())
   updatedAt         DateTime             @updatedAt
+
+  @@index([studyId])
 }
 
 model ReportMeasurement {
@@ -251,6 +261,8 @@ model AuditLog {
   userAgent   String?
   payload     Json?
   createdAt   DateTime @default(now())
+
+  @@index([createdAt])
 }
 
 model Notification {
@@ -360,4 +372,35 @@ model KeyImage {
   description     String?
   createdByUserId String
   createdAt       DateTime @default(now())
+}
+
+// ─── C1: Refresh token revocation (server-side) ───────────────────────────────
+// Stores a hashed record of every issued refresh token so logout can invalidate them.
+// HIPAA §164.312(a)(2)(iii): automatic log-off / session termination.
+
+model RefreshToken {
+  id        String    @id @default(cuid())
+  tokenHash String    @unique  // SHA-256 of the raw JWT refresh token
+  userId    String
+  user      User      @relation(fields: [userId], references: [id])
+  expiresAt DateTime
+  revokedAt DateTime?           // Non-null = token has been invalidated
+  createdAt DateTime  @default(now())
+
+  @@index([tokenHash])
+}
+
+// ─── A4: Password reset token ─────────────────────────────────────────────────
+// Single-use tokens for the forgot-password / reset-password flow.
+
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  tokenHash String    @unique  // SHA-256 of the raw reset token
+  userId    String
+  user      User      @relation(fields: [userId], references: [id])
+  expiresAt DateTime
+  usedAt    DateTime?           // Non-null = token has been consumed
+  createdAt DateTime  @default(now())
+
+  @@index([tokenHash])
 }
