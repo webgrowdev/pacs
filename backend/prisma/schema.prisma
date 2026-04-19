@@ -72,6 +72,7 @@ model User {
   refreshTokens       RefreshToken[]
   passwordResetTokens PasswordResetToken[]
   peerReviews         PeerReview[] @relation("PeerReviewsGiven")
+  criticalAcknowledgments Report[] @relation("CriticalAcknowledgments")
   criticalNotifications CriticalNotification[] @relation("CriticalNotificationsReceived")
   createdAt           DateTime    @default(now())
   updatedAt           DateTime    @updatedAt
@@ -171,12 +172,17 @@ model Report {
   draftedAt         DateTime?
   finalizedAt       DateTime?
   signedAt          DateTime?                        // Timestamp exacto de firma
+  tatMinutes        Int?
   pdfPath           String?              @db.Text
 
   // ─── Hallazgo crítico/STAT ────────────────────────────────────────────────
   isCritical        Boolean              @default(false)
   criticalAt        DateTime?            // Cuando se marcó como crítico
   criticalReason    String?              @db.Text    // Descripción del hallazgo crítico
+  criticalAcknowledgedAt       DateTime?
+  criticalAcknowledgedById     String?
+  criticalAcknowledgedBy       User?     @relation("CriticalAcknowledgments", fields: [criticalAcknowledgedById], references: [id])
+  criticalAcknowledgmentNote   String?   @db.Text
 
   // ─── Versioning & addendum ────────────────────────────────────────────────
   versionNumber     Int                  @default(1)
@@ -272,18 +278,27 @@ model GeneratedDocument {
 }
 
 model AuditLog {
-  id          String   @id @default(cuid())
-  userId      String?
-  user        User?    @relation(fields: [userId], references: [id])
-  action      String
-  entityType  String
-  entityId    String?
-  ipAddress   String?
-  userAgent   String?
-  payload     Json?
-  createdAt   DateTime @default(now())
+  id                        String   @id @default(cuid())
+  userId                    String?
+  user                      User?    @relation(fields: [userId], references: [id])
+  action                    String
+  entityType                String
+  entityId                  String?
+  ipAddress                 String?
+  userAgent                 String?
+  // ATNA extensions (IHE ITI-20 / RFC 3881)
+  eventActionCode           String?
+  eventOutcome              Int?
+  participantObjectId       String?
+  participantObjectTypeCode Int?
+  networkAccessPoint        String?
+  payload                   Json?
+  createdAt                 DateTime @default(now())
 
   @@index([createdAt])
+  @@index([userId])
+  @@index([action])
+  @@index([entityId])
 }
 
 model Notification {

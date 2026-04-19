@@ -23,6 +23,9 @@ import { analyticsRouter } from './modules/analytics/routes.js';
 import { auditRouter } from './modules/audit/routes.js';
 import { systemRouter } from './modules/system/routes.js';
 import { viewerRouter } from './modules/viewer/routes.js';
+import { worklistRouter } from './modules/worklist/routes.js';
+import { backupRouter } from './modules/admin/backup-routes.js';
+import { hl7AdminRouter } from './modules/admin/hl7-admin-routes.js';
 import { startScpServer } from './dicom/scp-server.js';
 import { startSftpWatcher } from './dicom/sftp-watcher.js';
 import { startStaleDraftAlertJob } from './jobs/stale-draft-alerts.js';
@@ -95,6 +98,18 @@ app.use(rateLimit({
   legacyHeaders: false,
   message: { message: 'Demasiadas solicitudes. Intente más tarde.' }
 }));
+
+// ─── Strict rate limiter for auth endpoints — brute-force protection ──────────
+// HIPAA §164.312(a)(2)(i): limit login attempts
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: 'Demasiados intentos de autenticación. Intente en 15 minutos.' }
+});
+app.use('/api/auth/login',   authLimiter);
+app.use('/api/auth/refresh', authLimiter);
 
 app.use(express.json({ limit: '10mb' }));
 // Cookie parser — needed for httpOnly refresh token (HIPAA: tokens not in localStorage)
@@ -247,6 +262,9 @@ app.use('/api/analytics',     analyticsRouter);
 app.use('/api/audit',         auditRouter);
 app.use('/api/system',        systemRouter);
 app.use('/api/viewer',        viewerRouter);
+app.use('/api/worklist',      worklistRouter);
+app.use('/api/admin/backup',  backupRouter);
+app.use('/api/admin/hl7',     hl7AdminRouter);
 
 // ─── DICOMweb — authentication required ──────────────────────────────────────
 // HIPAA §164.312(a)(2)(i): unauthenticated DICOM endpoints are a critical risk.

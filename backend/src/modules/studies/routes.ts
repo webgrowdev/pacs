@@ -2,6 +2,7 @@ import { Router } from 'express';
 import multer from 'multer';
 import fs from 'node:fs';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import * as tar from 'tar';
 import AdmZip from 'adm-zip';
 import dicomParser from 'dicom-parser';
@@ -13,6 +14,7 @@ import { studyStoragePath } from '../../storage/file-storage.js';
 import { logAudit } from '../../middleware/audit.js';
 import { createNotification } from '../notifications/service.js';
 import { sendStudyAssignedEmail } from '../../utils/email.js';
+import { env } from '../../config/env.js';
 
 const upload = multer({
   dest: path.resolve(process.cwd(), 'storage/tmp'),
@@ -162,7 +164,7 @@ studiesRouter.get('/:id', requireRole('ADMIN', 'DOCTOR') as any, async (req: Aut
       return res.status(403).json({ message: 'No autorizado para este estudio' });
     }
 
-    await logAudit(req, 'STUDY_VIEWED', 'STUDY', study.id);
+    await logAudit(req, 'STUDY_VIEWED', 'STUDY', study.id, undefined, { eventActionCode: 'R', participantObjectId: study.patient.id, participantObjectTypeCode: 1 });
     return res.json(study);
   } catch (err) {
     console.error('[STUDIES/GET/:id]', err);
@@ -534,5 +536,104 @@ studiesRouter.get('/:id/radiation-dose', requireRole('ADMIN', 'DOCTOR') as any, 
   } catch (err) {
     console.error('[STUDIES/RADIATION-DOSE/GET]', err);
     return res.status(500).json({ message: 'Error al obtener dosis de radiación' });
+  }
+});
+
+// ─── POST /api/studies/:id/deidentify ────────────────────────────────────────
+studiesRouter.post('/:id/deidentify', requireRole('ADMIN') as any, async (req: AuthRequest, res: any) => {
+  try {
+    const study = await prisma.study.findUnique({
+      where:   { id: String(req.params.id) },
+      include: { patient: true, reports: { where: { status: { in: ['FINAL', 'SIGNED'] } } }, dicomFiles: true }
+    });
+    if (!study) return res.status(404).json({ message: 'Estudio no encontrado' });
+    if (study.reports.length === 0) {
+      return res.status(422).json({ message: 'Solo se pueden anonimizar estudios con informe finalizado o firmado' });
+    }
+
+    const newStudyId = randomUUID();
+    const storageRoot = path.resolve(process.cwd(), env.STORAGE_ROOT);
+    const srcDir  = path.join(storageRoot, 'dicom', study.id);
+    const destDir = path.join(storageRoot, 'deidentified', newStudyId);
+
+    let anonPatient = await prisma.patient.findFirst({ where: { internalCode: 'ANONIMO' } });
+    if (!anonPatient) {
+      anonPatient = await prisma.patient.create({
+        data: {
+          internalCode: 'ANONIMO',
+          firstName:    'Paciente',
+          lastName:     'Anónimo',
+          documentId:   'ANONIMO-' + Date.now(),
+          dateOfBirth:  new Date('1900-01-01'),
+          sex:          'O'
+        }
+      });
+    }
+
+    const anonStudy = await prisma.study.create({
+      data: {
+        id:          newStudyId,
+        patientId:   anonPatient.id,
+        modality:    study.modality,
+        studyDate:   study.studyDate,
+        status:      'PUBLISHED',
+        description: study.description,
+        uploadedById: req.user!.sub,
+        source:      'MANUAL_UPLOAD'
+      }
+    });
+
+    if (fs.existsSync(srcDir)) {
+      fs.mkdirSync(destDir, { recursive: true });
+      const files = fs.readdirSync(srcDir);
+      for (const file of files) {
+        // Prevent path traversal — only allow safe file names (no directory components)
+        if (file.includes('/') || file.includes('\\') || file.includes('..')) continue;
+        const destFile = path.join(destDir, file);
+        // Ensure destination is within destDir
+        if (!destFile.startsWith(destDir + path.sep) && destFile !== destDir) continue;
+        fs.copyFileSync(path.join(srcDir, file), destFile);
+      }
+    }
+
+    await logAudit(req, 'PHI_DEIDENTIFIED', 'STUDY', study.id, {
+      originalStudyId:  study.id,
+      anonStudyId:      anonStudy.id,
+      patientId:        study.patientId,
+      filesCount:       study.dicomFiles.length
+    });
+
+    return res.json({
+      message:      'Estudio anonimizado correctamente',
+      anonStudyId:  anonStudy.id,
+      filesCount:   study.dicomFiles.length,
+      note:         'Los archivos DICOM han sido copiados a storage/deidentified/. Para borrado completo de tags PHI, use una herramienta DICOM dedicada (dcm4che, pydicom).'
+    });
+  } catch (err) {
+    console.error('[STUDIES/DEIDENTIFY]', err);
+    return res.status(500).json({ message: 'Error al anonimizar estudio' });
+  }
+});
+
+// ─── GET /api/studies/:id/remote-prior-studies ────────────────────────────────
+studiesRouter.get('/:id/remote-prior-studies', requireRole('ADMIN', 'DOCTOR') as any, async (req: AuthRequest, res: any) => {
+  try {
+    if (!env.ORTHANC_URL) {
+      return res.json({ available: false, message: 'ORTHANC_URL no está configurado' });
+    }
+    const study = await prisma.study.findUnique({
+      where: { id: String(req.params.id) },
+      select: { id: true, patientId: true, patient: { select: { documentId: true, internalCode: true } } }
+    });
+    if (!study) return res.status(404).json({ message: 'Estudio no encontrado' });
+
+    const { queryRemoteStudies } = await import('../../dicom/scu-client.js');
+    const patientId = study.patient.documentId || study.patient.internalCode;
+    const remoteStudies = await queryRemoteStudies(patientId);
+
+    return res.json({ available: true, patientId, data: remoteStudies });
+  } catch (err) {
+    console.error('[STUDIES/REMOTE-PRIOR]', err);
+    return res.status(500).json({ message: 'Error al consultar PACS remoto' });
   }
 });

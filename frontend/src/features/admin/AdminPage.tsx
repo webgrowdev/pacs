@@ -2,6 +2,7 @@ import { useState, FormEvent, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { AppLayout } from '../../components/AppLayout';
 import { api } from '../../lib/api';
+import { QualityDashboard } from './QualityDashboard';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -125,12 +126,13 @@ function timeAgo(iso: string): string {
 // Main page
 // ─────────────────────────────────────────────────────────────────────────────
 
-type TabId = 'monitor' | 'tutorial' | 'audit' | 'config' | 'users';
+type TabId = 'monitor' | 'tutorial' | 'audit' | 'config' | 'users' | 'quality';
 
 const TABS: Array<{ id: TabId; label: string; icon: string }> = [
   { id: 'monitor',  label: 'Equipos conectados', icon: '📡' },
   { id: 'tutorial', label: 'Tutorial de conexión', icon: '📋' },
   { id: 'audit',    label: 'Auditoría',           icon: '📊' },
+  { id: 'quality',  label: 'Calidad',             icon: '🏥' },
   { id: 'config',   label: 'Configuración',        icon: '⚙' },
   { id: 'users',    label: 'Usuarios',             icon: '👤' },
 ];
@@ -195,9 +197,74 @@ export function AdminPage() {
       {activeTab === 'monitor'  && <MonitorTab />}
       {activeTab === 'tutorial' && <TutorialTab />}
       {activeTab === 'audit'    && <AuditTab />}
+      {activeTab === 'quality'  && <QualityDashboard />}
       {activeTab === 'config'   && <ConfigTab />}
       {activeTab === 'users'    && <UsersTab />}
     </AppLayout>
+  );
+}
+
+function BackupWidget() {
+  const [status,    setStatus]    = useState<any>(null);
+  const [loading,   setLoading]   = useState(true);
+  const [running,   setRunning]   = useState(false);
+  const [runResult, setRunResult] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.get('/admin/backup/status').then(r => setStatus(r.data)).catch(() => setStatus(null)).finally(() => setLoading(false));
+  }, []);
+
+  const handleRun = async () => {
+    setRunning(true); setRunResult(null);
+    try {
+      const { data } = await api.post('/admin/backup/run', {});
+      setRunResult(data.message);
+    } catch (err: any) {
+      setRunResult(err?.response?.data?.message ?? 'Error al iniciar backup');
+    } finally { setRunning(false); }
+  };
+
+  if (loading) return <div style={{ fontSize: 12, color: 'var(--gray-400)' }}>Verificando backup...</div>;
+
+  const ageHours = status?.ageHours;
+  const isCritical = !status || status.status === 'MISSING' || status.status === 'OVERDUE';
+  const color = isCritical ? '#dc2626' : '#16a34a';
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 10,
+        padding: '10px 14px',
+        background: isCritical ? '#fef2f2' : '#f0fdf4',
+        border: `1px solid ${isCritical ? '#fca5a5' : '#86efac'}`,
+        borderRadius: 8
+      }}>
+        <span style={{ fontSize: 16 }}>{isCritical ? '🔴' : '🟢'}</span>
+        <div style={{ flex: 1 }}>
+          {status?.status === 'MISSING' ? (
+            <div style={{ fontSize: 13, fontWeight: 600, color }}>Sin backup registrado</div>
+          ) : status?.status === 'OVERDUE' ? (
+            <div style={{ fontSize: 13, fontWeight: 600, color }}>
+              ⚠ Último backup: hace {ageHours?.toFixed(0)} horas (vencido)
+            </div>
+          ) : (
+            <div style={{ fontSize: 13, fontWeight: 600, color }}>
+              Último backup: hace {ageHours?.toFixed(0)} hora{ageHours > 1 ? 's' : ''}
+            </div>
+          )}
+          {status?.lastBackupAt && (
+            <div style={{ fontSize: 11, color: 'var(--gray-500)' }}>
+              {new Date(status.lastBackupAt).toLocaleString('es-AR')}
+              {status.lastBackupSizeGb != null && ` · ${status.lastBackupSizeGb} GB`}
+            </div>
+          )}
+        </div>
+        <button className="btn btn-ghost btn-sm" onClick={handleRun} disabled={running}>
+          {running ? 'Iniciando...' : '▶ Forzar backup'}
+        </button>
+      </div>
+      {runResult && <div className="alert alert-success"><span>ℹ</span><span>{runResult}</span></div>}
+    </div>
   );
 }
 
@@ -351,6 +418,10 @@ function MonitorTab() {
             </span>
           </div>
         )}
+      </SectionCard>
+
+      <SectionCard title="Estado del Backup" icon="💾">
+        <BackupWidget />
       </SectionCard>
     </div>
   );
@@ -644,11 +715,32 @@ function AuditTab() {
     d.setDate(d.getDate() - 30);
     return d.toISOString().split('T')[0];
   });
-  const [to,        setTo]        = useState(() => new Date().toISOString().split('T')[0]);
-  const [format,    setFormat]    = useState<'csv' | 'json'>('csv');
-  const [exporting, setExporting] = useState(false);
-  const [error,     setError]     = useState('');
-  const [success,   setSuccess]   = useState('');
+  const [to,           setTo]        = useState(() => new Date().toISOString().split('T')[0]);
+  const [format,       setFormat]    = useState<'csv' | 'json'>('csv');
+  const [exporting,    setExporting] = useState(false);
+  const [error,        setError]     = useState('');
+  const [success,      setSuccess]   = useState('');
+  const [logs,         setLogs]      = useState<any[]>([]);
+  const [logsTotal,    setLogsTotal] = useState(0);
+  const [logsPage,     setLogsPage]  = useState(1);
+  const [logsLoading, setLogsLoading] = useState(false);
+  const [filterAction, setFilterAction] = useState('');
+
+  const loadLogs = useCallback(async (page: number, action: string, fromDate: string, toDate: string) => {
+    setLogsLoading(true);
+    try {
+      const params: any = { page, limit: 20, from: fromDate, to: toDate };
+      if (action) params.action = action;
+      const { data } = await api.get('/audit/logs', { params });
+      setLogs(data.data ?? []);
+      setLogsTotal(data.total ?? 0);
+    } catch { setLogs([]); }
+    finally { setLogsLoading(false); }
+  }, []);
+
+  useEffect(() => {
+    loadLogs(logsPage, filterAction, from, to);
+  }, [logsPage, filterAction, from, to, loadLogs]);
 
   const handleExport = async (e: FormEvent) => {
     e.preventDefault();
@@ -681,8 +773,77 @@ function AuditTab() {
     }
   };
 
+  const totalPages = Math.ceil(logsTotal / 20);
+
   return (
-    <div style={{ maxWidth: 640 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 20, maxWidth: 900 }}>
+      {/* ─── Logs Table ─── */}
+      <SectionCard title="Registro de Auditoría" icon="🔍">
+        <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+          <div className="form-group" style={{ margin: 0, minWidth: 120 }}>
+            <label style={{ fontSize: 11 }}>Desde</label>
+            <input type="date" value={from} onChange={(e) => { setFrom(e.target.value); setLogsPage(1); }} />
+          </div>
+          <div className="form-group" style={{ margin: 0, minWidth: 120 }}>
+            <label style={{ fontSize: 11 }}>Hasta</label>
+            <input type="date" value={to} onChange={(e) => { setTo(e.target.value); setLogsPage(1); }} />
+          </div>
+          <div className="form-group" style={{ margin: 0, minWidth: 160 }}>
+            <label style={{ fontSize: 11 }}>Acción</label>
+            <input type="text" placeholder="Ej: STUDY_VIEWED" value={filterAction}
+              onChange={(e) => { setFilterAction(e.target.value); setLogsPage(1); }} />
+          </div>
+          <button className="btn btn-ghost btn-sm" onClick={() => loadLogs(logsPage, filterAction, from, to)}>
+            🔄 Actualizar
+          </button>
+        </div>
+
+        {logsLoading ? (
+          <div style={{ padding: 24, textAlign: 'center', color: 'var(--gray-400)' }}>Cargando...</div>
+        ) : (
+          <>
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                <thead>
+                  <tr style={{ background: 'var(--gray-50)', textAlign: 'left' }}>
+                    {['Timestamp', 'Usuario', 'Acción', 'Tipo', 'Entidad ID', 'IP'].map(h => (
+                      <th key={h} style={{ padding: '6px 10px', borderBottom: '1px solid var(--gray-200)', whiteSpace: 'nowrap', fontWeight: 600 }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {logs.length === 0 ? (
+                    <tr><td colSpan={6} style={{ padding: 24, textAlign: 'center', color: 'var(--gray-400)' }}>Sin registros</td></tr>
+                  ) : logs.map((log: any) => (
+                    <tr key={log.id} style={{ borderBottom: '1px solid var(--gray-100)' }}>
+                      <td style={{ padding: '5px 10px', whiteSpace: 'nowrap' }}>{new Date(log.createdAt).toLocaleString('es-AR')}</td>
+                      <td style={{ padding: '5px 10px' }}>{log.user ? `${log.user.firstName} ${log.user.lastName}` : '—'}</td>
+                      <td style={{ padding: '5px 10px' }}>
+                        <span style={{ background: '#f0f9ff', color: '#0369a1', borderRadius: 4, padding: '1px 6px', fontSize: 11, fontWeight: 600 }}>
+                          {log.action}
+                        </span>
+                      </td>
+                      <td style={{ padding: '5px 10px' }}>{log.entityType}</td>
+                      <td style={{ padding: '5px 10px', fontFamily: 'monospace', fontSize: 11, color: 'var(--gray-500)' }}>{log.entityId?.slice(0, 12) ?? '—'}</td>
+                      <td style={{ padding: '5px 10px', color: 'var(--gray-400)' }}>{log.ipAddress ?? '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 10, fontSize: 12 }}>
+              <span style={{ color: 'var(--gray-500)' }}>{logsTotal} registros totales</span>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button className="btn btn-ghost btn-sm" disabled={logsPage <= 1} onClick={() => setLogsPage(p => p - 1)}>← Anterior</button>
+                <span style={{ padding: '4px 8px', color: 'var(--gray-500)' }}>{logsPage} / {totalPages || 1}</span>
+                <button className="btn btn-ghost btn-sm" disabled={logsPage >= totalPages} onClick={() => setLogsPage(p => p + 1)}>Siguiente →</button>
+              </div>
+            </div>
+          </>
+        )}
+      </SectionCard>
+
+      {/* ─── Export Section ─── */}
       <SectionCard title="Exportar Log de Auditoría" icon="📊">
         <p style={{ fontSize: 13, color: 'var(--gray-500)', marginBottom: 20 }}>
           Descarga el registro completo de acciones del sistema (cumplimiento HIPAA §164.312 / ANMAT Disp. 2318/02).
@@ -714,6 +875,68 @@ function AuditTab() {
           </div>
         </form>
       </SectionCard>
+    </div>
+  );
+}
+
+function Hl7ConfigSection() {
+  const [host,        setHost]        = useState('');
+  const [port,        setPort]        = useState('2575');
+  const [receiverApp, setReceiverApp] = useState('HIS');
+  const [testing,     setTesting]     = useState(false);
+  const [testResult,  setTestResult]  = useState<{ success: boolean; message: string } | null>(null);
+
+  const handleTest = async () => {
+    if (!host) { setTestResult({ success: false, message: 'Ingrese un host' }); return; }
+    setTesting(true); setTestResult(null);
+    try {
+      const { data } = await api.post('/admin/hl7/test', { host, port: Number(port) });
+      setTestResult({ success: data.success, message: data.message });
+    } catch (err: any) {
+      setTestResult({ success: false, message: err?.response?.data?.message ?? 'Error de conexión' });
+    } finally { setTesting(false); }
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <p style={{ fontSize: 13, color: 'var(--gray-500)', margin: 0 }}>
+        Configure las variables de entorno HL7 en el archivo <code>.env</code> del backend. Use este formulario para probar la conectividad.
+      </p>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 120px 1fr', gap: 10 }}>
+        <div className="form-group" style={{ margin: 0 }}>
+          <label style={{ fontSize: 12 }}>Host receptor HL7</label>
+          <input type="text" placeholder="Ej: 192.168.1.100" value={host} onChange={e => setHost(e.target.value)} />
+        </div>
+        <div className="form-group" style={{ margin: 0 }}>
+          <label style={{ fontSize: 12 }}>Puerto</label>
+          <input type="number" value={port} onChange={e => setPort(e.target.value)} />
+        </div>
+        <div className="form-group" style={{ margin: 0 }}>
+          <label style={{ fontSize: 12 }}>App receptora</label>
+          <input type="text" placeholder="HIS" value={receiverApp} onChange={e => setReceiverApp(e.target.value)} />
+        </div>
+      </div>
+      {testResult && (
+        <div className={`alert ${testResult.success ? 'alert-success' : 'alert-error'}`}>
+          <span>{testResult.success ? '✓' : '✕'}</span>
+          <span>{testResult.message}</span>
+        </div>
+      )}
+      <div>
+        <button className="btn btn-secondary" onClick={handleTest} disabled={testing}>
+          {testing ? 'Probando...' : '🔌 Enviar mensaje de prueba MLLP'}
+        </button>
+      </div>
+      <div style={{ background: 'var(--gray-50)', borderRadius: 8, padding: '10px 14px', fontSize: 12 }}>
+        <strong>Variables .env para habilitar HL7:</strong>
+        <pre style={{ margin: '6px 0 0', fontFamily: 'monospace', fontSize: 11 }}>{`HL7_ENABLED=true
+HL7_HOST=${host || 'IP_DEL_HIS'}
+HL7_PORT=${port}
+HL7_SENDER_APP=PACS
+HL7_SENDER_FACILITY=PACSMED
+HL7_RECEIVER_APP=${receiverApp}
+HL7_RECEIVER_FACILITY=HOSPITAL`}</pre>
+      </div>
     </div>
   );
 }
@@ -778,6 +1001,10 @@ function ConfigTab() {
             <span>Archivos con error → movidos a <code>failed/</code></span>
           </div>
         </div>
+      </SectionCard>
+
+      <SectionCard title="Integración HL7 v2" icon="🏥">
+        <Hl7ConfigSection />
       </SectionCard>
     </div>
   );

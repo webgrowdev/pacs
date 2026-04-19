@@ -23,6 +23,7 @@ import { logSystemAudit } from '../middleware/audit.js';
 const { TransferSyntax } = constants;
 const { Association } = association;
 const { CStoreResponse } = responses;
+const { CFindResponse } = responses;
 
 // ─── AE Title propio del PACS ─────────────────────────────────────────────────
 const PACS_AE_TITLE = env.DICOM_AE_TITLE;
@@ -137,6 +138,55 @@ class PacsScp extends Scp {
       const response = CStoreResponse.fromRequest(request);
       response.setStatus(0xa700); // Out of resources
       callback(response);
+    }
+  }
+
+  async cFindRequest(request: any, callback: (response: any) => void) {
+    try {
+      const windowDays = env.MWL_WINDOW_DAYS;
+      const since = new Date();
+      since.setDate(since.getDate() - windowDays);
+
+      const studies = await prisma.study.findMany({
+        where: {
+          status: { in: ['UPLOADED', 'IN_REVIEW'] },
+          studyDate: { gte: since }
+        },
+        include: { patient: true }
+      });
+
+      for (const study of studies) {
+        const ds = new Dataset({
+          PatientName: `${study.patient.lastName}^${study.patient.firstName}`,
+          PatientID: study.patient.internalCode || study.patient.documentId,
+          PatientBirthDate: study.patient.dateOfBirth
+            ? study.patient.dateOfBirth.toISOString().replace(/-/g, '').split('T')[0]
+            : '',
+          PatientSex: study.patient.sex?.toUpperCase().charAt(0) || 'O',
+          StudyInstanceUID: study.studyInstanceUid || study.id,
+          AccessionNumber: study.id.slice(0, 16),
+          Modality: study.modality,
+          RequestedProcedureDescription: study.description || study.modality,
+          ScheduledProcedureStepSequence: [{
+            ScheduledStationAETitle: PACS_AE_TITLE,
+            ScheduledProcedureStepStartDate: study.studyDate.toISOString().replace(/-/g, '').split('T')[0],
+            Modality: study.modality
+          }]
+        });
+        const pendingResponse = CFindResponse.fromRequest(request);
+        pendingResponse.setDataset(ds);
+        pendingResponse.setStatus(0xff00); // Pending
+        callback(pendingResponse);
+      }
+
+      const finalResponse = CFindResponse.fromRequest(request);
+      finalResponse.setStatus(0x0000); // Success
+      callback(finalResponse);
+    } catch (err) {
+      console.error('[SCP/MWL] Error en C-FIND:', err);
+      const errorResponse = CFindResponse.fromRequest(request);
+      errorResponse.setStatus(0xa700); // Out of resources
+      callback(errorResponse);
     }
   }
 }

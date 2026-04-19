@@ -259,7 +259,7 @@ reportsRouter.post('/', requireRole('DOCTOR', 'ADMIN') as any, async (req: AuthR
       studyId:          parsed.data.studyId,
       measurementCount: measData?.length ?? 0,
       aiUsed:           parsed.data.aiUsed ?? false
-    });
+    }, { eventActionCode: 'C' });
     return res.status(201).json(report);
   } catch (err) {
     console.error('[REPORTS/POST]', err);
@@ -473,9 +473,15 @@ reportsRouter.post('/:id/finalize', requireRole('DOCTOR', 'ADMIN') as any, async
       .update(`${report.findings}|${report.conclusion}`)
       .digest('hex');
 
+    const finalizedAt = new Date();
+    const studyDate = report.study.studyDate;
+    const tatMinutes = studyDate
+      ? Math.max(0, Math.round((finalizedAt.getTime() - studyDate.getTime()) / 60_000))
+      : null;
+
     const updated = await prisma.report.update({
       where: { id: report.id },
-      data:  { status: ReportStatus.FINAL, finalizedAt: new Date(), pdfPath: pdfRelativePath, signatureHash: contentHash }
+      data:  { status: ReportStatus.FINAL, finalizedAt, pdfPath: pdfRelativePath, signatureHash: contentHash, tatMinutes }
     });
 
     await prisma.generatedDocument.create({
@@ -503,7 +509,35 @@ reportsRouter.post('/:id/finalize', requireRole('DOCTOR', 'ADMIN') as any, async
       pdfPath:        pdfRelativePath,
       contentHash,
       patientNotified: !!patient.email
-    });
+    }, { eventActionCode: 'E', participantObjectId: patient.id, participantObjectTypeCode: 1 });
+
+    // PENDIENTE 3: HL7 ORU^R01 outbound
+    if (env.HL7_ENABLED && env.HL7_HOST) {
+      const { sendHl7ORU } = await import('../hl7/hl7-sender.js');
+      const pdfUrl = pdfRelativePath ? `${env.APP_BASE_URL}/files/${pdfRelativePath}` : undefined;
+      sendHl7ORU({
+        reportId:         report.id,
+        studyId:          report.studyId,
+        modality:         report.study.modality,
+        studyDate:        report.study.studyDate,
+        patientId:        patient.id,
+        patientName:      `${patient.lastName}^${patient.firstName}`,
+        patientDob:       patient.dateOfBirth?.toISOString().replace(/-/g,'').split('T')[0] ?? '',
+        patientSex:       patient.sex ?? 'O',
+        documentId:       patient.documentId,
+        conclusion:       report.conclusion,
+        doctorId:         req.user!.sub,
+        doctorName:       `${report.doctor.lastName}^${report.doctor.firstName}`,
+        finalizedAt:      updated.finalizedAt ?? new Date(),
+        pdfUrl,
+        senderApp:        env.HL7_SENDER_APP,
+        senderFacility:   env.HL7_SENDER_FACILITY,
+        receiverApp:      env.HL7_RECEIVER_APP ?? 'HIS',
+        receiverFacility: env.HL7_RECEIVER_FACILITY ?? 'HOSPITAL',
+      }, env.HL7_HOST, env.HL7_PORT).catch((err) =>
+        console.error('[HL7] Error enviando ORU^R01:', err)
+      );
+    }
 
     return res.json({ ...updated, pdfUrl: toFileUrl(pdfRelativePath, env.APP_BASE_URL) });
   } catch (err) {
@@ -1030,12 +1064,47 @@ reportsRouter.post('/:id/mark-critical', requireRole('DOCTOR', 'ADMIN') as any, 
       reason:                 parsed.data.reason,
       requestingDoctorEmail:  requestingDoctorEmail ?? null,
       notifiedAt:             new Date().toISOString()
-    });
+    }, { eventActionCode: 'E', eventOutcome: 0 });
 
     return res.json({ ...updated, criticalNotified: !!requestingDoctorEmail });
   } catch (err) {
     console.error('[REPORTS/MARK-CRITICAL]', err);
     return res.status(500).json({ message: 'Error al marcar hallazgo crítico' });
+  }
+});
+
+// ─── POST /api/reports/:id/acknowledge-critical ───────────────────────────────
+reportsRouter.post('/:id/acknowledge-critical', requireRole('DOCTOR', 'ADMIN') as any, async (req: AuthRequest, res: any) => {
+  const schema = z.object({ note: z.string().max(2000).optional() });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ message: 'Payload inválido' });
+
+  try {
+    const report = await prisma.report.findUnique({
+      where: { id: String(req.params.id) }
+    });
+    if (!report) return res.status(404).json({ message: 'Informe no encontrado' });
+    if (!report.isCritical) return res.status(422).json({ message: 'Este informe no está marcado como hallazgo crítico' });
+    if (report.criticalAcknowledgedAt) return res.status(422).json({ message: 'El hallazgo crítico ya fue reconocido' });
+
+    const updated = await prisma.report.update({
+      where: { id: report.id },
+      data:  {
+        criticalAcknowledgedAt:     new Date(),
+        criticalAcknowledgedById:   req.user!.sub,
+        criticalAcknowledgmentNote: parsed.data.note
+      }
+    });
+
+    await logAudit(req, 'CRITICAL_ACKNOWLEDGED', 'REPORT', report.id, {
+      acknowledgedBy: req.user!.sub,
+      note:           parsed.data.note
+    }, { eventActionCode: 'E', eventOutcome: 0 });
+
+    return res.json(updated);
+  } catch (err) {
+    console.error('[REPORTS/ACKNOWLEDGE-CRITICAL]', err);
+    return res.status(500).json({ message: 'Error al confirmar hallazgo crítico' });
   }
 });
 
