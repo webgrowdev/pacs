@@ -7,6 +7,7 @@ import { getAccessToken } from '../../lib/auth';
 import { DicomViewer, ViewerMeasurement, DicomViewerHandle } from './DicomViewer';
 import { useAuth } from '../../lib/auth';
 import { RichTextEditor } from '../../components/RichTextEditor';
+import { checkSpelling, SpellError } from '../../lib/medicalSpellCheck';
 
 interface Measurement {
   id?: string;
@@ -246,6 +247,11 @@ export function StudyDetailPage() {
   const [keyImages,     setKeyImages]     = useState<KeyImage[]>([]);
   const [showKeyImages, setShowKeyImages] = useState(false);
 
+  // ── Sección 19: Medical spell check ──────────────────────────────────────
+  const [findingsSpellErrors,   setFindingsSpellErrors]   = useState<SpellError[]>([]);
+  const [conclusionSpellErrors, setConclusionSpellErrors] = useState<SpellError[]>([]);
+  const spellCheckRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   // UI state
   const [saving,              setSaving]              = useState(false);
   const [finalizing,          setFinalizing]          = useState(false);
@@ -317,6 +323,20 @@ export function StudyDetailPage() {
   };
 
   const isFinalized = report?.status === 'FINAL' || report?.status === 'SIGNED';
+
+  // ── Sección 19: Run spell check 600ms after typing stops ─────────────────
+  useEffect(() => {
+    if (isFinalized) return;
+    if (spellCheckRef.current) clearTimeout(spellCheckRef.current);
+    spellCheckRef.current = setTimeout(() => {
+      // Strip HTML tags before spell checking
+      const plainFindings   = findings.replace(/<[^>]*>/g, ' ');
+      const plainConclusion = conclusion.replace(/<[^>]*>/g, ' ');
+      setFindingsSpellErrors(checkSpelling(plainFindings));
+      setConclusionSpellErrors(checkSpelling(plainConclusion));
+    }, 600);
+    return () => { if (spellCheckRef.current) clearTimeout(spellCheckRef.current); };
+  }, [findings, conclusion, isFinalized]);
 
   const showMessage = (type: 'success' | 'error', text: string) => {
     setMessage({ type, text });
@@ -1302,6 +1322,10 @@ export function StudyDetailPage() {
                     minHeight={120}
                     disabled={isFinalized}
                   />
+                  {/* Sección 19: Spell check feedback */}
+                  {!isFinalized && findingsSpellErrors.length > 0 && (
+                    <SpellCheckBadge errors={findingsSpellErrors} />
+                  )}
                 </div>
 
                 {/* Conclusión */}
@@ -1316,6 +1340,10 @@ export function StudyDetailPage() {
                     minHeight={90}
                     disabled={isFinalized}
                   />
+                  {/* Sección 19: Spell check feedback */}
+                  {!isFinalized && conclusionSpellErrors.length > 0 && (
+                    <SpellCheckBadge errors={conclusionSpellErrors} />
+                  )}
                 </div>
 
                 {/* Resumen paciente */}
@@ -1948,4 +1976,49 @@ function StudyStatusBadge({ status }: { status: string }) {
 function formatDate(iso: string): string {
   if (!iso) return '—';
   return new Date(iso).toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', year: 'numeric' });
+}
+
+// ── Sección 19: SpellCheckBadge — shows misspelling count with expandable list ─
+
+function SpellCheckBadge({ errors }: { errors: SpellError[] }) {
+  const [expanded, setExpanded] = useState(false);
+  if (errors.length === 0) return null;
+  return (
+    <div style={{ marginTop: 4 }}>
+      <button
+        type="button"
+        onClick={() => setExpanded((p) => !p)}
+        style={{
+          fontSize: 11, color: '#92400e', background: '#fef3c7',
+          border: '1px solid #fcd34d', borderRadius: 4,
+          padding: '2px 8px', cursor: 'pointer',
+        }}
+      >
+        ⚠ {errors.length} posible{errors.length > 1 ? 's' : ''} error{errors.length > 1 ? 'es' : ''} ortográfico{errors.length > 1 ? 's' : ''} {expanded ? '▲' : '▼'}
+      </button>
+      {expanded && (
+        <div style={{
+          marginTop: 4, padding: '6px 10px', background: '#fffbeb',
+          border: '1px solid #fcd34d', borderRadius: 4, fontSize: 12,
+        }}>
+          {errors.map((err, i) => (
+            <div key={i} style={{ marginBottom: 4 }}>
+              <span style={{ color: '#92400e', fontWeight: 600 }}>"{err.word}"</span>
+              {err.suggestions.length > 0 && (
+                <span style={{ color: '#374151' }}>
+                  {' '}→ sugerir: <em>{err.suggestions.join(', ')}</em>
+                </span>
+              )}
+            </div>
+          ))}
+          <div style={{ marginTop: 6, color: '#78350f', fontSize: 11 }}>
+            💡 El corrector del navegador (lang="es") también está activo.
+            Para ver sugerencias: haga clic derecho sobre la palabra subrayada,
+            o use el menú contextual del teclado (Shift+F10 / tecla Aplicación).
+            Para agregar un término médico al diccionario: clic derecho → "Agregar al diccionario".
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }

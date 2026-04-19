@@ -11,6 +11,8 @@ import { createNotification } from '../notifications/service.js';
 import { sendReportFinalizedEmail, sendCriticalFindingEmail, sendSignedReportEmail } from '../../utils/email.js';
 import { toFileUrl } from '../../storage/file-storage.js';
 import { env } from '../../config/env.js';
+import { generateDoctorCertificate, signWithPkcs7, verifyPkcs7 } from './pkcs7-signer.js';
+import { extractDicomThumbnail, resolveAbsoluteDicomPath } from './dicom-thumbnail.js';
 
 export const reportsRouter = Router();
 reportsRouter.use(requireAuth as any);
@@ -385,6 +387,46 @@ reportsRouter.post('/:id/finalize', requireRole('DOCTOR', 'ADMIN') as any, async
     const { patient } = report.study;
     const verifyUrl = `${env.APP_BASE_URL}/reports/${report.id}/verify`;
 
+    // ── Sección 6: Extract DICOM thumbnails for key images ────────────────────
+    const keyImageBuffers: Array<{
+      imageBuffer: Buffer;
+      mimeType: 'image/jpeg' | 'image/png';
+      label?: string;
+      instanceNumber?: number;
+      sopInstanceUid?: string;
+    }> = [];
+
+    if (report.keyImages.length > 0) {
+      // Look up the DicomFile records by SOP Instance UID
+      const sopUids = report.keyImages.map((ki) => ki.sopInstanceUid).filter(Boolean) as string[];
+      const dicomFiles = sopUids.length > 0
+        ? await prisma.dicomFile.findMany({
+            where: { sopInstanceUid: { in: sopUids }, studyId: report.studyId },
+            select: { filePath: true, sopInstanceUid: true }
+          })
+        : [];
+
+      const sopToPath = new Map(dicomFiles.map((f) => [f.sopInstanceUid, f.filePath]));
+
+      for (const ki of report.keyImages) {
+        const relPath = sopToPath.get(ki.sopInstanceUid);
+        if (!relPath) continue;
+        const absPath = resolveAbsoluteDicomPath(relPath);
+        const thumbBuf = await extractDicomThumbnail(absPath);
+        if (thumbBuf) {
+          // Detect JPEG magic bytes (FF D8)
+          const isJpeg = thumbBuf[0] === 0xff && thumbBuf[1] === 0xd8;
+          keyImageBuffers.push({
+            imageBuffer:    thumbBuf,
+            mimeType:       isJpeg ? 'image/jpeg' : 'image/png',
+            label:          ki.description ?? undefined,
+            instanceNumber: ki.instanceNumber ?? undefined,
+            sopInstanceUid: ki.sopInstanceUid,
+          });
+        }
+      }
+    }
+
     const pdfRelativePath = await generateClinicalPdf({
       reportId:             report.id,
       patientName:          `${patient.firstName} ${patient.lastName}`,
@@ -414,6 +456,7 @@ reportsRouter.post('/:id/finalize', requireRole('DOCTOR', 'ADMIN') as any, async
       structuredScores:     (report.structuredScores as StructuredScores) || undefined,
       radiationDose:        (report.study.radiationDoseJson as RadiationDose) || undefined,
       verifyUrl,
+      keyImageBuffers:      keyImageBuffers.length > 0 ? keyImageBuffers : undefined,
       measurements:         report.measurements.map((m) => ({
         label:          m.label,
         value:          m.value,
@@ -516,9 +559,56 @@ reportsRouter.post('/:id/sign', requireRole('DOCTOR', 'ADMIN') as any, async (re
       .update(`${report.findings}|${report.conclusion}`)
       .digest('hex');
 
+    // ── Sección 3: PKCS#7/CMS digital signature ──────────────────────────────
+    let pkcs7Signature: string | undefined;
+    let signerCertPem: string | undefined;
+
+    try {
+      // Get or generate the doctor's signing certificate
+      let doctor = await prisma.user.findUnique({
+        where:  { id: req.user!.sub },
+        select: { id: true, firstName: true, lastName: true, email: true,
+                  licenseNumber: true, specialty: true,
+                  signingCertPem: true, signingKeyEncPem: true }
+      });
+
+      if (!doctor) throw new Error('Doctor not found');
+
+      if (!doctor.signingCertPem || !doctor.signingKeyEncPem) {
+        // First sign: generate a new key pair and certificate
+        const certData = await generateDoctorCertificate({
+          firstName:     doctor.firstName,
+          lastName:      doctor.lastName,
+          email:         doctor.email,
+          licenseNumber: doctor.licenseNumber,
+          specialty:     doctor.specialty,
+        });
+        await prisma.user.update({
+          where: { id: doctor.id },
+          data:  { signingCertPem: certData.certPem, signingKeyEncPem: certData.encryptedKeyPem }
+        });
+        doctor = { ...doctor, signingCertPem: certData.certPem, signingKeyEncPem: certData.encryptedKeyPem };
+      }
+
+      // Sign the report content (findings + conclusion + reportId for uniqueness)
+      const sigContent = `${report.findings}|${report.conclusion}|${report.id}`;
+      const result = signWithPkcs7(sigContent, doctor.signingCertPem!, doctor.signingKeyEncPem!);
+      pkcs7Signature = result.p7b64;
+      signerCertPem  = result.certPem;
+    } catch (sigErr) {
+      // Non-fatal: PKCS#7 failure is logged but does not block signing
+      console.error('[REPORTS/SIGN/PKCS7]', sigErr);
+    }
+
     const updated = await prisma.report.update({
       where: { id: report.id },
-      data:  { status: ReportStatus.SIGNED, signatureHash: contentHash, signedAt: new Date() }
+      data:  {
+        status:        ReportStatus.SIGNED,
+        signatureHash: contentHash,
+        signedAt:      new Date(),
+        pkcs7Signature: pkcs7Signature,
+        signerCertPem:  signerCertPem,
+      }
     });
 
     // A3: If this is an addendum being signed, regenerate the parent PDF
@@ -549,9 +639,11 @@ reportsRouter.post('/:id/sign', requireRole('DOCTOR', 'ADMIN') as any, async (re
       // Non-fatal — distribution failure should not block the sign operation
     }
 
-    // A1: Include the legal disclaimer in the sign response
-    const disclaimer = 'FIRMA ELECTRÓNICA SIMPLE — Este informe no constituye firma digital con validez legal plena según Ley 25.506. Válido únicamente para uso interno y como registro clínico preliminar.';
-    return res.json({ ...updated, disclaimer });
+    // A1: Include legal status in the sign response
+    const disclaimer = pkcs7Signature
+      ? 'FIRMA ELECTRÓNICA AVANZADA (PKCS#7/CMS) — Firmado con certificado X.509. Para validez legal plena bajo Ley 25.506 se requiere certificado emitido por CA reconocida (AFIP/OCA).'
+      : 'FIRMA ELECTRÓNICA SIMPLE — Este informe no constituye firma digital con validez legal plena según Ley 25.506.';
+    return res.json({ ...updated, disclaimer, pkcs7Signed: !!pkcs7Signature });
   } catch (err) {
     console.error('[REPORTS/SIGN]', err);
     return res.status(500).json({ message: 'Error al firmar informe' });
@@ -718,6 +810,7 @@ async function regenerateParentPdfWithAddendumBanner(
  * been tampered with since it was finalized.
  *
  * Recomputes SHA-256(findings|conclusion) and compares with stored signatureHash.
+ * Also verifies the PKCS#7/CMS signature when present (Sección 3).
  * A mismatch indicates the content was altered after finalization.
  */
 reportsRouter.get('/:id/verify-integrity', requireRole('ADMIN', 'DOCTOR') as any, async (req: AuthRequest, res: any) => {
@@ -740,10 +833,27 @@ reportsRouter.get('/:id/verify-integrity', requireRole('ADMIN', 'DOCTOR') as any
 
     const intact = currentHash === report.signatureHash;
 
+    // ── Sección 3: Verify PKCS#7 signature if present ────────────────────────
+    let pkcs7Valid: boolean | null = null;
+    let pkcs7Message = '';
+    if (report.pkcs7Signature && report.signerCertPem) {
+      try {
+        const sigContent = `${report.findings}|${report.conclusion}|${report.id}`;
+        pkcs7Valid  = verifyPkcs7(report.pkcs7Signature, report.signerCertPem, sigContent);
+        pkcs7Message = pkcs7Valid
+          ? 'Firma PKCS#7/CMS verificada correctamente.'
+          : '⚠ La firma PKCS#7 no corresponde al contenido actual.';
+      } catch {
+        pkcs7Valid  = false;
+        pkcs7Message = 'Error al verificar la firma PKCS#7.';
+      }
+    }
+
     await logAudit(req, 'REPORT_INTEGRITY_CHECKED', 'REPORT', report.id, {
       intact,
       storedHash:  report.signatureHash,
       currentHash,
+      pkcs7Valid,
       checkedBy:   req.user!.sub
     });
 
@@ -753,6 +863,9 @@ reportsRouter.get('/:id/verify-integrity', requireRole('ADMIN', 'DOCTOR') as any
       intact,
       storedHash:  report.signatureHash,
       currentHash,
+      pkcs7Signed: !!report.pkcs7Signature,
+      pkcs7Valid,
+      pkcs7Message: pkcs7Message || undefined,
       verifiedAt:  new Date().toISOString(),
       message:     intact
         ? 'El informe no ha sido alterado desde su firma.'
@@ -775,15 +888,17 @@ reportsRouter.get('/:id/verify', async (req: any, res: any) => {
     const report = await prisma.report.findUnique({
       where: { id: String(req.params.id) },
       select: {
-        id:            true,
-        status:        true,
-        signatureHash: true,
-        findings:      true,
-        conclusion:    true,
-        finalizedAt:   true,
-        signedAt:      true,
-        doctor:        { select: { firstName: true, lastName: true, licenseNumber: true } },
-        study:         { select: { modality: true, studyDate: true, patient: { select: { firstName: true, lastName: true, internalCode: true } } } }
+        id:              true,
+        status:          true,
+        signatureHash:   true,
+        pkcs7Signature:  true,
+        signerCertPem:   true,
+        findings:        true,
+        conclusion:      true,
+        finalizedAt:     true,
+        signedAt:        true,
+        doctor:          { select: { firstName: true, lastName: true, licenseNumber: true } },
+        study:           { select: { modality: true, studyDate: true, patient: { select: { firstName: true, lastName: true, internalCode: true } } } }
       }
     });
     if (!report) return res.status(404).json({ message: 'Informe no encontrado' });
@@ -797,18 +912,33 @@ reportsRouter.get('/:id/verify', async (req: any, res: any) => {
       intact = currentHash === report.signatureHash;
     }
 
+    // Verify PKCS#7 signature if present
+    let pkcs7Valid: boolean | null = null;
+    if (report.pkcs7Signature && report.signerCertPem) {
+      try {
+        const sigContent = `${report.findings}|${report.conclusion}|${report.id}`;
+        pkcs7Valid = verifyPkcs7(report.pkcs7Signature, report.signerCertPem, sigContent);
+      } catch {
+        pkcs7Valid = false;
+      }
+    }
+
     return res.json({
       reportId:       report.id,
       status:         report.status,
       intact,
+      pkcs7Signed:    !!report.pkcs7Signature,
+      pkcs7Valid,
       finalizedAt:    report.finalizedAt,
       signedAt:       report.signedAt,
       doctor:         `Dr/a. ${report.doctor.firstName} ${report.doctor.lastName}` + (report.doctor.licenseNumber ? ` — Mat. ${report.doctor.licenseNumber}` : ''),
       patient:        `${report.study.patient.lastName}, ${report.study.patient.firstName} — Cód. ${report.study.patient.internalCode}`,
       modality:       report.study.modality,
       studyDate:      report.study.studyDate,
-      message:        intact === true
-        ? 'Informe auténtico. El contenido no ha sido alterado.'
+      message:        pkcs7Valid === true
+        ? 'Informe auténtico. Firma PKCS#7/CMS verificada y contenido íntegro.'
+        : intact === true
+        ? 'Informe auténtico. El contenido no ha sido alterado (firma SHA-256).'
         : intact === false
         ? '⚠ El contenido del informe ha sido alterado post-firma.'
         : 'Informe sin firma digital.'

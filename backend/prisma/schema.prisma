@@ -55,6 +55,9 @@ model User {
   lastName            String
   licenseNumber       String?                          // Matrícula profesional
   specialty           String?                          // Especialidad médica
+  // ─── Signing certificate (Sección 3) ─────────────────────────────────────
+  signingCertPem      String?  @db.Text               // Self-signed X.509 cert PEM for PKCS#7 signing
+  signingKeyEncPem    String?  @db.Text               // AES-256-encrypted RSA private key PEM
   isActive            Boolean     @default(true)
   mustChangePassword  Boolean     @default(false)
   passwordChangedAt   DateTime?                        // C3: Updated on each password change to invalidate old tokens
@@ -185,8 +188,10 @@ model Report {
   addendumAt        DateTime?
   addendumByUserId  String?
 
-  // ─── Content integrity ────────────────────────────────────────────────────
+  // ─── Content integrity & digital signature ───────────────────────────────
   signatureHash     String?              // SHA-256 of findings|conclusion stored on model
+  pkcs7Signature    String?  @db.Text   // Base64 PKCS#7/CMS detached signature (Sección 3)
+  signerCertPem     String?  @db.Text   // X.509 certificate PEM used to sign (Sección 3)
 
   // ─── Structured scores (BI-RADS, TI-RADS, PI-RADS, LI-RADS, chest) ───────
   structuredScores  Json?                // { birads?: {...}, tirads?: {...}, pirads?: {...}, lirads?: {...}, chest?: {...} }

@@ -145,6 +145,9 @@ export function RichTextEditor({ value, onChange, placeholder, minHeight = 110, 
           onFocus={() => { isFocused.current = true; }}
           onBlur={() => { isFocused.current = false; if (ref.current) onChange(ref.current.innerHTML); }}
           onKeyDown={handleKeyDown}
+          // Sección 19: Enable native browser spell check in Spanish
+          spellCheck
+          lang="es"
           style={{
             minHeight,
             padding: '8px 10px',
