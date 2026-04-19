@@ -587,7 +587,12 @@ studiesRouter.post('/:id/deidentify', requireRole('ADMIN') as any, async (req: A
       fs.mkdirSync(destDir, { recursive: true });
       const files = fs.readdirSync(srcDir);
       for (const file of files) {
-        fs.copyFileSync(path.join(srcDir, file), path.join(destDir, file));
+        // Prevent path traversal — only allow safe file names (no directory components)
+        if (file.includes('/') || file.includes('\\') || file.includes('..')) continue;
+        const destFile = path.join(destDir, file);
+        // Ensure destination is within destDir
+        if (!destFile.startsWith(destDir + path.sep) && destFile !== destDir) continue;
+        fs.copyFileSync(path.join(srcDir, file), destFile);
       }
     }
 

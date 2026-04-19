@@ -111,7 +111,10 @@ analyticsRouter.get('/tat', async (req: AuthRequest, res: any) => {
 
     const tats = reports.map(r => r.tatMinutes!).sort((a, b) => a - b);
     const avg  = Math.round(tats.reduce((s, v) => s + v, 0) / tats.length);
-    const median = tats[Math.floor(tats.length / 2)];
+    const midIdx = Math.floor(tats.length / 2);
+    const median = tats.length % 2 === 0
+      ? Math.round((tats[midIdx - 1] + tats[midIdx]) / 2)
+      : tats[midIdx];
     const p95    = tats[Math.floor(tats.length * 0.95)];
     const slaBreaches = tats.filter(t => t > SLA_THRESHOLD).length;
 

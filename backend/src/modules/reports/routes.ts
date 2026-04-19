@@ -476,7 +476,7 @@ reportsRouter.post('/:id/finalize', requireRole('DOCTOR', 'ADMIN') as any, async
     const finalizedAt = new Date();
     const studyDate = report.study.studyDate;
     const tatMinutes = studyDate
-      ? Math.round((finalizedAt.getTime() - studyDate.getTime()) / 60_000)
+      ? Math.max(0, Math.round((finalizedAt.getTime() - studyDate.getTime()) / 60_000))
       : null;
 
     const updated = await prisma.report.update({
