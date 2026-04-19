@@ -25,6 +25,7 @@ import { systemRouter } from './modules/system/routes.js';
 import { viewerRouter } from './modules/viewer/routes.js';
 import { startScpServer } from './dicom/scp-server.js';
 import { startSftpWatcher } from './dicom/sftp-watcher.js';
+import { startStaleDraftAlertJob } from './jobs/stale-draft-alerts.js';
 
 const app = express();
 
@@ -283,6 +284,10 @@ app.listen(Number(env.PORT), () => {
 
   try { startSftpWatcher(); } catch (err) {
     console.error('[SFTP-WATCHER]', err);
+  }
+
+  try { startStaleDraftAlertJob(); } catch (err) {
+    console.error('[STALE-DRAFTS]', err);
   }
 });
 

@@ -7,6 +7,7 @@ import { getAccessToken } from '../../lib/auth';
 import { DicomViewer, ViewerMeasurement, DicomViewerHandle } from './DicomViewer';
 import { useAuth } from '../../lib/auth';
 import { RichTextEditor } from '../../components/RichTextEditor';
+import { checkSpelling, SpellError } from '../../lib/medicalSpellCheck';
 
 interface Measurement {
   id?: string;
@@ -51,15 +52,78 @@ interface PendingAiSuggestion {
   suggestedText: string;
 }
 
+interface StructuredScores {
+  birads?: {
+    category: number;
+    density?: string;
+    laterality?: string;
+    assessment?: string;
+  };
+  tirads?: {
+    category: number;
+    points?: number;
+    recommendation?: string;
+  };
+  pirads?: {
+    category: number;
+    zone?: string;
+    dcePositive?: boolean;
+    assessment?: string;
+  };
+  lirads?: {
+    category: string;
+    size?: number;
+    arterialEnhancement?: boolean;
+    assessment?: string;
+  };
+  chest?: {
+    opacity?: boolean;
+    pleuralEffusion?: boolean;
+    pneumothorax?: boolean;
+    cardiomegaly?: boolean;
+    infiltrate?: boolean;
+    consolidation?: boolean;
+    atelectasis?: boolean;
+    findings?: string;
+  };
+}
+
+interface PeerReview {
+  id: string;
+  status: string;
+  discrepancyLevel?: string;
+  comment?: string;
+  createdAt: string;
+  reviewer?: { firstName: string; lastName: string };
+}
+
+interface PatientHistoryStudy {
+  id: string;
+  modality: string;
+  studyDate: string;
+  description?: string;
+  status: string;
+  reports: Array<{
+    id: string;
+    status: string;
+    findings: string;
+    conclusion: string;
+    finalizedAt?: string;
+    doctor: { firstName: string; lastName: string };
+  }>;
+}
+
 interface Report {
   id:             string;
   status:         string;
+  clinicalIndication?: string;
   findings:       string;
   conclusion:     string;
   patientSummary?: string;
   measurements:   Measurement[];
   keyImages?:     KeyImage[];
   finalizedAt?:   string;
+  signedAt?:      string;
   pdfPath?:       string;
   doctor:         { firstName: string; lastName: string };
   // Versioning
@@ -72,6 +136,14 @@ interface Report {
   aiUsed?:        boolean;
   aiModel?:       string;
   aiSessions?:    AiSession[];
+  // Critical finding
+  isCritical?:    boolean;
+  criticalAt?:    string;
+  criticalReason?: string;
+  // Structured scores
+  structuredScores?: StructuredScores;
+  // Peer reviews
+  peerReviews?:   PeerReview[];
 }
 
 interface ReportTemplate {
@@ -88,9 +160,11 @@ interface Study {
   studyDate: string;
   description?: string;
   status: string;
+  patientId?: string;
   requestingDoctorName?: string;
   insuranceOrderNumber?: string;
   patient: {
+    id?: string;
     firstName: string; lastName: string; internalCode: string;
     documentId: string; cuil?: string; dateOfBirth: string; sex: string;
     healthInsurance?: string; healthInsurancePlan?: string; healthInsuranceMemberId?: string;
@@ -110,6 +184,7 @@ export function StudyDetailPage() {
   const viewerRef = useRef<DicomViewerHandle>(null);
 
   // Form state
+  const [clinicalIndication, setClinicalIndication] = useState('');
   const [findings,       setFindings]       = useState('');
   const [conclusion,     setConclusion]     = useState('');
   const [patientSummary, setPatientSummary] = useState('');
@@ -117,6 +192,7 @@ export function StudyDetailPage() {
   const [newMeasLabel,   setNewMeasLabel]   = useState('');
   const [newMeasValue,   setNewMeasValue]   = useState('');
   const [newMeasUnit,    setNewMeasUnit]    = useState('mm');
+  const [structuredScores, setStructuredScores] = useState<StructuredScores>({});
 
   // AI attribution tracking
   const [aiSessions,     setAiSessions]     = useState<AiSession[]>([]);
@@ -136,9 +212,45 @@ export function StudyDetailPage() {
   const [addendumReason,    setAddendumReason]    = useState('');
   const [creatingAddendum,  setCreatingAddendum]  = useState(false);
 
+  // Sign confirmation modal (Sección 4)
+  const [showSignModal,     setShowSignModal]     = useState(false);
+  const [signPassword,      setSignPassword]      = useState('');
+
+  // Critical finding modal (Sección 1)
+  const [showCriticalModal, setShowCriticalModal] = useState(false);
+  const [criticalReason,    setCriticalReason]    = useState('');
+  const [markingCritical,   setMarkingCritical]   = useState(false);
+
+  // PDF Preview modal (Sección 20)
+  const [showPdfPreview,    setShowPdfPreview]    = useState(false);
+
+  // Patient history panel (Sección 8)
+  const [showHistoryPanel,  setShowHistoryPanel]  = useState(false);
+  const [patientHistory,    setPatientHistory]    = useState<PatientHistoryStudy[]>([]);
+  const [historyLoading,    setHistoryLoading]    = useState(false);
+
+  // Peer review (Sección 12)
+  const [showPeerReviewModal,  setShowPeerReviewModal]  = useState(false);
+  const [peerReviewStatus,     setPeerReviewStatus]     = useState<'REVIEWED' | 'DISCREPANT'>('REVIEWED');
+  const [peerReviewLevel,      setPeerReviewLevel]      = useState<'MINOR' | 'MAJOR' | 'CRITICAL'>('MINOR');
+  const [peerReviewComment,    setPeerReviewComment]    = useState('');
+  const [submittingPeerReview, setSubmittingPeerReview] = useState(false);
+
+  // Integrity verification (Sección 5)
+  const [integrityResult,   setIntegrityResult]   = useState<{ intact: boolean; message: string; verifiedAt?: string } | null>(null);
+  const [verifyingIntegrity, setVerifyingIntegrity] = useState(false);
+
+  // Structured scores panel (Sección 7)
+  const [showScoresPanel,   setShowScoresPanel]   = useState(false);
+
   // Key images
   const [keyImages,     setKeyImages]     = useState<KeyImage[]>([]);
   const [showKeyImages, setShowKeyImages] = useState(false);
+
+  // ── Sección 19: Medical spell check ──────────────────────────────────────
+  const [findingsSpellErrors,   setFindingsSpellErrors]   = useState<SpellError[]>([]);
+  const [conclusionSpellErrors, setConclusionSpellErrors] = useState<SpellError[]>([]);
+  const spellCheckRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // UI state
   const [saving,              setSaving]              = useState(false);
@@ -165,6 +277,7 @@ export function StudyDetailPage() {
       const r: Report | undefined = data.reports?.[0];
       if (r) {
         setReport(r);
+        setClinicalIndication(r.clinicalIndication || '');
         setFindings(r.findings || '');
         setConclusion(r.conclusion || '');
         setPatientSummary(r.patientSummary || '');
@@ -173,6 +286,7 @@ export function StudyDetailPage() {
         setAiUsed(r.aiUsed ?? false);
         setAiModel(r.aiModel ?? undefined);
         setAiSessions((r.aiSessions as AiSession[]) ?? []);
+        setStructuredScores((r.structuredScores as StructuredScores) ?? {});
       }
     } catch {
       setMessage({ type: 'error', text: 'Error al cargar el estudio' });
@@ -209,6 +323,20 @@ export function StudyDetailPage() {
   };
 
   const isFinalized = report?.status === 'FINAL' || report?.status === 'SIGNED';
+
+  // ── Sección 19: Run spell check 600ms after typing stops ─────────────────
+  useEffect(() => {
+    if (isFinalized) return;
+    if (spellCheckRef.current) clearTimeout(spellCheckRef.current);
+    spellCheckRef.current = setTimeout(() => {
+      // Strip HTML tags before spell checking
+      const plainFindings   = findings.replace(/<[^>]*>/g, ' ');
+      const plainConclusion = conclusion.replace(/<[^>]*>/g, ' ');
+      setFindingsSpellErrors(checkSpelling(plainFindings));
+      setConclusionSpellErrors(checkSpelling(plainConclusion));
+    }, 600);
+    return () => { if (spellCheckRef.current) clearTimeout(spellCheckRef.current); };
+  }, [findings, conclusion, isFinalized]);
 
   const showMessage = (type: 'success' | 'error', text: string) => {
     setMessage({ type, text });
@@ -247,10 +375,12 @@ export function StudyDetailPage() {
       const resolvedSessions = resolveAiSessions(findings, conclusion, patientSummary);
       const payload = {
         studyId: study.id,
+        clinicalIndication: clinicalIndication || undefined,
         findings,
         conclusion,
         patientSummary: patientSummary || undefined,
         measurements,
+        structuredScores: Object.keys(structuredScores).length > 0 ? structuredScores : undefined,
         aiUsed,
         aiModel,
         aiSessions: resolvedSessions
@@ -294,20 +424,100 @@ export function StudyDetailPage() {
     }
   };
 
-  // ── Sign ──────────────────────────────────────────────────────────────────────
+  // ── Sign with password confirmation (Sección 4) ──────────────────────────────
   const signReport = async () => {
     if (!report) return;
-    if (!window.confirm('¿Confirma que desea firmar este informe? Esta acción es irreversible.')) return;
+    if (!signPassword.trim()) {
+      showMessage('error', 'Ingrese su contraseña para confirmar la firma');
+      return;
+    }
     setSigning(true);
     try {
-      const { data } = await api.post(`/reports/${report.id}/sign`);
+      const { data } = await api.post(`/reports/${report.id}/sign`, { password: signPassword });
       setReport(data);
-      showMessage('success', '✓ Informe firmado.');
+      setShowSignModal(false);
+      setSignPassword('');
+      showMessage('success', '✓ Informe firmado correctamente.');
       loadStudy();
     } catch (err: any) {
       showMessage('error', err?.response?.data?.message ?? 'Error al firmar informe');
     } finally {
       setSigning(false);
+    }
+  };
+
+  // ── Mark critical finding (Sección 1) ─────────────────────────────────────────
+  const markCritical = async () => {
+    if (!report || !criticalReason.trim()) return;
+    setMarkingCritical(true);
+    try {
+      const { data } = await api.post(`/reports/${report.id}/mark-critical`, { reason: criticalReason });
+      setReport((prev) => prev ? { ...prev, isCritical: true, criticalReason: data.criticalReason } : prev);
+      setShowCriticalModal(false);
+      setCriticalReason('');
+      showMessage('success', '🚨 Hallazgo marcado como crítico. Notificación enviada al médico solicitante.');
+    } catch (err: any) {
+      showMessage('error', err?.response?.data?.message ?? 'Error al marcar hallazgo crítico');
+    } finally {
+      setMarkingCritical(false);
+    }
+  };
+
+  // ── Verify integrity (Sección 5) ─────────────────────────────────────────────
+  const verifyIntegrity = async () => {
+    if (!report) return;
+    setVerifyingIntegrity(true);
+    try {
+      const { data } = await api.get(`/reports/${report.id}/verify-integrity`);
+      setIntegrityResult({ intact: data.intact, message: data.message, verifiedAt: data.verifiedAt });
+    } catch (err: any) {
+      showMessage('error', err?.response?.data?.message ?? 'Error al verificar integridad');
+    } finally {
+      setVerifyingIntegrity(false);
+    }
+  };
+
+  // ── Load patient history (Sección 8) ─────────────────────────────────────────
+  const loadPatientHistory = async () => {
+    if (!study) return;
+    setHistoryLoading(true);
+    try {
+      // Use the patient's ID if available, otherwise fall back to internalCode
+      const patientIdentifier = study.patient.id ?? study.patient.internalCode;
+      const resp = await api.get(`/patients/${patientIdentifier}/history`)
+        .catch(async () => {
+          // Fallback: use study patientId if present
+          if (study.patientId) {
+            return api.get(`/patients/${study.patientId}/history`);
+          }
+          return { data: { studies: [] } };
+        });
+      setPatientHistory(resp.data.studies || []);
+    } catch {
+      setPatientHistory([]);
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  // ── Submit peer review (Sección 12) ──────────────────────────────────────────
+  const submitPeerReview = async () => {
+    if (!report) return;
+    setSubmittingPeerReview(true);
+    try {
+      await api.post(`/reports/${report.id}/peer-review`, {
+        status: peerReviewStatus,
+        discrepancyLevel: peerReviewStatus === 'DISCREPANT' ? peerReviewLevel : undefined,
+        comment: peerReviewComment || undefined
+      });
+      setShowPeerReviewModal(false);
+      setPeerReviewComment('');
+      showMessage('success', '✓ Revisión por pares registrada correctamente.');
+      loadStudy();
+    } catch (err: any) {
+      showMessage('error', err?.response?.data?.message ?? 'Error al registrar revisión por pares');
+    } finally {
+      setSubmittingPeerReview(false);
     }
   };
 
@@ -726,18 +936,25 @@ export function StudyDetailPage() {
 
                 {/* PDF download — prominent */}
                 {report?.pdfPath && (
-                  <button
-                    className="btn btn-primary"
-                    onClick={openPdf}
-                    disabled={pdfLoading}
-                    style={{ width: '100%', justifyContent: 'center', gap: 8, padding: '12px 16px', fontSize: 14 }}
-                  >
-                    {pdfLoading ? (
-                      <>⏳ Descargando PDF...</>
-                    ) : (
-                      <>📄 Ver / Descargar PDF del informe</>
-                    )}
-                  </button>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button
+                      className="btn btn-primary"
+                      onClick={openPdf}
+                      disabled={pdfLoading}
+                      style={{ flex: 1, justifyContent: 'center', gap: 8, padding: '12px 16px', fontSize: 14 }}
+                    >
+                      {pdfLoading ? <>⏳ Descargando PDF...</> : <>📄 Ver / Descargar PDF del informe</>}
+                    </button>
+                    {/* Sección 20: Preview del PDF */}
+                    <button
+                      className="btn btn-secondary"
+                      onClick={() => setShowPdfPreview(true)}
+                      style={{ padding: '12px 14px', fontSize: 13 }}
+                      title="Vista previa del PDF en modal"
+                    >
+                      👁 Preview
+                    </button>
+                  </div>
                 )}
                 {!report?.pdfPath && (
                   <div className="alert alert-error">
@@ -745,17 +962,106 @@ export function StudyDetailPage() {
                   </div>
                 )}
 
+                {/* Sección 5: Verificar integridad */}
+                {report?.status === 'SIGNED' && (
+                  <div>
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      onClick={verifyIntegrity}
+                      disabled={verifyingIntegrity}
+                      style={{ width: '100%', justifyContent: 'center', gap: 8, fontSize: 12 }}
+                    >
+                      {verifyingIntegrity ? '⏳ Verificando...' : '🔒 Verificar integridad del informe'}
+                    </button>
+                    {integrityResult && (
+                      <div style={{
+                        marginTop: 8,
+                        padding: '8px 12px',
+                        borderRadius: 6,
+                        background: integrityResult.intact ? '#f0fdf4' : '#fef2f2',
+                        border: `1px solid ${integrityResult.intact ? '#86efac' : '#fca5a5'}`,
+                        fontSize: 12,
+                        color: integrityResult.intact ? '#166534' : '#991b1b'
+                      }}>
+                        {integrityResult.intact ? '✓' : '⚠'} {integrityResult.message}
+                        {integrityResult.verifiedAt && (
+                          <div style={{ marginTop: 2, fontSize: 10, opacity: 0.8 }}>
+                            Verificado: {new Date(integrityResult.verifiedAt).toLocaleString('es-AR')}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {/* Sign button — only for FINAL (not yet SIGNED) reports */}
                 {report?.status === 'FINAL' && (
                   <button
                     className="btn btn-secondary"
-                    onClick={signReport}
+                    onClick={() => setShowSignModal(true)}
                     disabled={signing}
                     style={{ width: '100%', justifyContent: 'center', gap: 8 }}
-                    title="Firmar el informe"
+                    title="Firmar el informe (requiere contraseña)"
                   >
                     {signing ? '⏳ Firmando...' : '✍ Firmar informe'}
                   </button>
+                )}
+
+                {/* Sección 12: Peer Review — para el informe finalizado/firmado */}
+                {(report?.status === 'FINAL' || report?.status === 'SIGNED') && (
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => setShowPeerReviewModal(true)}
+                    style={{ width: '100%', justifyContent: 'center', gap: 8, fontSize: 12, borderColor: '#6366f1', color: '#4338ca' }}
+                  >
+                    👥 Realizar revisión por pares
+                  </button>
+                )}
+
+                {/* Peer reviews list */}
+                {(report?.peerReviews?.length ?? 0) > 0 && (
+                  <ReportSection title="REVISIONES POR PARES">
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      {report!.peerReviews!.map((pr) => (
+                        <div key={pr.id} style={{
+                          padding: '6px 10px',
+                          background: pr.status === 'DISCREPANT' ? '#fef2f2' : '#f0fdf4',
+                          borderRadius: 6,
+                          fontSize: 12,
+                          border: `1px solid ${pr.status === 'DISCREPANT' ? '#fca5a5' : '#86efac'}`
+                        }}>
+                          <div style={{ fontWeight: 600, color: pr.status === 'DISCREPANT' ? '#991b1b' : '#166534' }}>
+                            {pr.status === 'DISCREPANT' ? `⚠ Discrepante — ${pr.discrepancyLevel}` : '✓ Revisado (concordante)'}
+                          </div>
+                          {pr.comment && <div style={{ color: 'var(--gray-600)', marginTop: 3 }}>{pr.comment}</div>}
+                          <div style={{ color: 'var(--gray-400)', fontSize: 10, marginTop: 2 }}>
+                            {new Date(pr.createdAt).toLocaleString('es-AR')}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </ReportSection>
+                )}
+
+                {/* Sección 1: Alerta crítica (si el informe está marcado como crítico) */}
+                {report?.isCritical && (
+                  <div style={{
+                    background: '#fef2f2',
+                    border: '1px solid #fca5a5',
+                    borderLeft: '4px solid #dc2626',
+                    borderRadius: 8,
+                    padding: '12px 14px'
+                  }}>
+                    <div style={{ color: '#dc2626', fontWeight: 700, fontSize: 13 }}>🚨 HALLAZGO CRÍTICO / STAT</div>
+                    {report.criticalReason && (
+                      <div style={{ color: '#7f1d1d', fontSize: 12, marginTop: 4 }}>{report.criticalReason}</div>
+                    )}
+                    {report.criticalAt && (
+                      <div style={{ color: '#991b1b', fontSize: 10, marginTop: 4 }}>
+                        Marcado: {new Date(report.criticalAt).toLocaleString('es-AR')}
+                      </div>
+                    )}
+                  </div>
                 )}
 
                 {/* Addendum button — only for SIGNED reports */}
@@ -799,6 +1105,15 @@ export function StudyDetailPage() {
                   </ReportSection>
                 )}
 
+                {/* Indicación clínica */}
+                {report?.clinicalIndication && (
+                  <ReportSection title="INDICACIÓN CLÍNICA">
+                    <p style={{ fontSize: 13, lineHeight: 1.6, color: 'var(--gray-700)', margin: 0, fontStyle: 'italic' }}>
+                      {report.clinicalIndication}
+                    </p>
+                  </ReportSection>
+                )}
+
                 {/* Report content — read only */}
                 <ReportSection title="HALLAZGOS">
                   <p style={{ fontSize: 13, lineHeight: 1.7, color: 'var(--gray-700)', margin: 0, whiteSpace: 'pre-wrap' }}>
@@ -811,6 +1126,53 @@ export function StudyDetailPage() {
                     {report?.conclusion}
                   </p>
                 </ReportSection>
+
+                {/* Sección 7: Puntuaciones estructuradas (read-only in finalized view) */}
+                {report?.structuredScores && Object.keys(report.structuredScores).length > 0 && (
+                  <ReportSection title="PUNTUACIONES ESTRUCTURADAS">
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12 }}>
+                      {report.structuredScores.birads && (
+                        <div><span style={{ fontWeight: 700, color: '#1e3a5f' }}>BI-RADS: </span>
+                          Categoría {report.structuredScores.birads.category}
+                          {report.structuredScores.birads.density && ` · Densidad ${report.structuredScores.birads.density}`}
+                          {report.structuredScores.birads.laterality && ` · ${report.structuredScores.birads.laterality}`}
+                        </div>
+                      )}
+                      {report.structuredScores.tirads && (
+                        <div><span style={{ fontWeight: 700, color: '#1e3a5f' }}>TI-RADS: </span>
+                          Categoría {report.structuredScores.tirads.category}
+                          {report.structuredScores.tirads.points != null && ` (${report.structuredScores.tirads.points} pts)`}
+                        </div>
+                      )}
+                      {report.structuredScores.pirads && (
+                        <div><span style={{ fontWeight: 700, color: '#1e3a5f' }}>PI-RADS: </span>
+                          Categoría {report.structuredScores.pirads.category}
+                          {report.structuredScores.pirads.zone && ` · Zona ${report.structuredScores.pirads.zone}`}
+                        </div>
+                      )}
+                      {report.structuredScores.lirads && (
+                        <div><span style={{ fontWeight: 700, color: '#1e3a5f' }}>LI-RADS: </span>
+                          {report.structuredScores.lirads.category}
+                          {report.structuredScores.lirads.size && ` · ${report.structuredScores.lirads.size} mm`}
+                        </div>
+                      )}
+                      {report.structuredScores.chest && (
+                        <div>
+                          <span style={{ fontWeight: 700, color: '#1e3a5f' }}>Rx Tórax: </span>
+                          {[
+                            report.structuredScores.chest.opacity && 'Opacidad',
+                            report.structuredScores.chest.pleuralEffusion && 'Derrame pleural',
+                            report.structuredScores.chest.pneumothorax && 'Neumotórax',
+                            report.structuredScores.chest.cardiomegaly && 'Cardiomegalia',
+                            report.structuredScores.chest.infiltrate && 'Infiltrado',
+                            report.structuredScores.chest.consolidation && 'Consolidación',
+                            report.structuredScores.chest.atelectasis && 'Atelectasia'
+                          ].filter(Boolean).join(', ') || 'Sin hallazgos patológicos'}
+                        </div>
+                      )}
+                    </div>
+                  </ReportSection>
+                )}
 
                 {report?.patientSummary && (
                   <ReportSection title="RESUMEN PARA EL PACIENTE">
@@ -900,6 +1262,54 @@ export function StudyDetailPage() {
                   </div>
                 )}
 
+                {/* Sección 1: Botón de hallazgo crítico */}
+                {report && !report.isCritical && (
+                  <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => setShowCriticalModal(true)}
+                      style={{ color: '#dc2626', borderColor: '#fca5a5', fontSize: 12 }}
+                    >
+                      🚨 Marcar hallazgo crítico / STAT
+                    </button>
+                  </div>
+                )}
+                {report?.isCritical && (
+                  <div style={{
+                    background: '#fef2f2', border: '1px solid #fca5a5',
+                    borderLeft: '4px solid #dc2626', borderRadius: 8, padding: '10px 14px'
+                  }}>
+                    <div style={{ color: '#dc2626', fontWeight: 700, fontSize: 13 }}>🚨 HALLAZGO CRÍTICO / STAT</div>
+                    {report.criticalReason && <div style={{ color: '#7f1d1d', fontSize: 12, marginTop: 4 }}>{report.criticalReason}</div>}
+                  </div>
+                )}
+
+                {/* Sección 2: Indicación clínica (obligatoria) */}
+                <div className="form-group" style={{ margin: 0 }}>
+                  <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--gray-600)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                    Indicación clínica / motivo de consulta *
+                  </label>
+                  <textarea
+                    value={clinicalIndication}
+                    onChange={(e) => setClinicalIndication(e.target.value)}
+                    placeholder="Ej: Dolor torácico atípico de 48hs, disnea progresiva. Control post-tratamiento..."
+                    rows={2}
+                    style={{
+                      width: '100%', resize: 'vertical', minHeight: 55, fontSize: 13,
+                      lineHeight: 1.5, padding: '8px 12px',
+                      border: `1.5px solid ${!clinicalIndication.trim() ? '#fca5a5' : 'var(--gray-300)'}`,
+                      borderRadius: 8, background: '#fff', color: 'var(--gray-800)',
+                      outline: 'none', fontFamily: 'inherit'
+                    }}
+                    disabled={isFinalized}
+                  />
+                  {!clinicalIndication.trim() && (
+                    <div style={{ fontSize: 11, color: '#dc2626', marginTop: 3 }}>
+                      Campo obligatorio en el informe radiológico
+                    </div>
+                  )}
+                </div>
+
                 {/* Hallazgos */}
                 <div className="form-group" style={{ margin: 0 }}>
                   <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--gray-600)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
@@ -912,6 +1322,10 @@ export function StudyDetailPage() {
                     minHeight={120}
                     disabled={isFinalized}
                   />
+                  {/* Sección 19: Spell check feedback */}
+                  {!isFinalized && findingsSpellErrors.length > 0 && (
+                    <SpellCheckBadge errors={findingsSpellErrors} />
+                  )}
                 </div>
 
                 {/* Conclusión */}
@@ -926,6 +1340,10 @@ export function StudyDetailPage() {
                     minHeight={90}
                     disabled={isFinalized}
                   />
+                  {/* Sección 19: Spell check feedback */}
+                  {!isFinalized && conclusionSpellErrors.length > 0 && (
+                    <SpellCheckBadge errors={conclusionSpellErrors} />
+                  )}
                 </div>
 
                 {/* Resumen paciente */}
@@ -1040,6 +1458,154 @@ export function StudyDetailPage() {
                       style={{ fontSize: 12, padding: '6px 10px' }}
                     >+</button>
                   </div>
+                </div>
+
+                {/* Sección 7: Puntuaciones estructuradas por modalidad */}
+                <div style={{ border: '1px solid var(--gray-200)', borderRadius: 8, overflow: 'hidden' }}>
+                  <button
+                    style={{
+                      width: '100%', display: 'flex', justifyContent: 'space-between',
+                      alignItems: 'center', padding: '10px 14px',
+                      background: 'var(--gray-50)', border: 'none', cursor: 'pointer',
+                      fontSize: 12, fontWeight: 600, color: 'var(--gray-600)',
+                      textTransform: 'uppercase', letterSpacing: '0.05em'
+                    }}
+                    onClick={() => setShowScoresPanel((v) => !v)}
+                  >
+                    <span>📊 Puntuaciones estructuradas</span>
+                    <span style={{ fontSize: 10 }}>{showScoresPanel ? '▲' : '▼'}</span>
+                  </button>
+                  <AnimatePresence>
+                    {showScoresPanel && (
+                      <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} style={{ overflow: 'hidden' }}>
+                        <div style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+                          {/* BI-RADS */}
+                          {(study?.modality === 'MG' || study?.modality === 'US') && (
+                            <div>
+                              <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--gray-600)' }}>BI-RADS (Mama)</label>
+                              <div style={{ display: 'flex', gap: 6, marginTop: 4, flexWrap: 'wrap' }}>
+                                {[0, 1, 2, 3, 4, 5, 6].map((cat) => (
+                                  <button key={cat}
+                                    className={`btn btn-sm ${structuredScores.birads?.category === cat ? 'btn-primary' : 'btn-ghost'}`}
+                                    onClick={() => setStructuredScores((s) => ({ ...s, birads: { ...s.birads, category: cat } }))}
+                                    style={{ padding: '3px 8px', fontSize: 11 }}
+                                  >{cat}</button>
+                                ))}
+                              </div>
+                              {structuredScores.birads && (
+                                <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
+                                  {['izquierda', 'derecha', 'bilateral'].map((lat) => (
+                                    <button key={lat}
+                                      className={`btn btn-sm ${structuredScores.birads?.laterality === lat ? 'btn-primary' : 'btn-ghost'}`}
+                                      onClick={() => setStructuredScores((s) => ({ ...s, birads: { ...s.birads!, laterality: lat } }))}
+                                      style={{ padding: '3px 8px', fontSize: 11 }}
+                                    >{lat}</button>
+                                  ))}
+                                  <select value={structuredScores.birads?.density ?? ''} style={{ fontSize: 11, padding: '2px 6px' }}
+                                    onChange={(e) => setStructuredScores((s) => ({ ...s, birads: { ...s.birads!, density: e.target.value } }))}>
+                                    <option value="">Densidad...</option>
+                                    <option value="A">A - Casi todo graso</option>
+                                    <option value="B">B - Densidad dispersa</option>
+                                    <option value="C">C - Heterogéneo denso</option>
+                                    <option value="D">D - Extremadamente denso</option>
+                                  </select>
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                          {/* TI-RADS */}
+                          {study?.modality === 'US' && (
+                            <div>
+                              <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--gray-600)' }}>TI-RADS (Tiroides)</label>
+                              <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+                                {[1, 2, 3, 4, 5].map((cat) => (
+                                  <button key={cat}
+                                    className={`btn btn-sm ${structuredScores.tirads?.category === cat ? 'btn-primary' : 'btn-ghost'}`}
+                                    onClick={() => setStructuredScores((s) => ({ ...s, tirads: { ...s.tirads, category: cat } }))}
+                                    style={{ padding: '3px 8px', fontSize: 11 }}
+                                  >{cat}</button>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* PI-RADS */}
+                          {study?.modality === 'MR' && (
+                            <div>
+                              <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--gray-600)' }}>PI-RADS (Próstata)</label>
+                              <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+                                {[1, 2, 3, 4, 5].map((cat) => (
+                                  <button key={cat}
+                                    className={`btn btn-sm ${structuredScores.pirads?.category === cat ? 'btn-primary' : 'btn-ghost'}`}
+                                    onClick={() => setStructuredScores((s) => ({ ...s, pirads: { ...s.pirads, category: cat } }))}
+                                    style={{ padding: '3px 8px', fontSize: 11 }}
+                                  >{cat}</button>
+                                ))}
+                              </div>
+                              <div style={{ display: 'flex', gap: 6, marginTop: 4, flexWrap: 'wrap' }}>
+                                {['PZ', 'TZ', 'AS', 'SV'].map((zone) => (
+                                  <button key={zone}
+                                    className={`btn btn-sm ${structuredScores.pirads?.zone === zone ? 'btn-primary' : 'btn-ghost'}`}
+                                    onClick={() => setStructuredScores((s) => ({ ...s, pirads: { ...s.pirads!, zone } }))}
+                                    style={{ padding: '3px 8px', fontSize: 11 }}
+                                  >{zone}</button>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* LI-RADS */}
+                          {(study?.modality === 'CT' || study?.modality === 'MR') && (
+                            <div>
+                              <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--gray-600)' }}>LI-RADS (Hígado)</label>
+                              <div style={{ display: 'flex', gap: 6, marginTop: 4, flexWrap: 'wrap' }}>
+                                {['LR-1', 'LR-2', 'LR-3', 'LR-4', 'LR-5', 'LR-M', 'LR-TIV'].map((cat) => (
+                                  <button key={cat}
+                                    className={`btn btn-sm ${structuredScores.lirads?.category === cat ? 'btn-primary' : 'btn-ghost'}`}
+                                    onClick={() => setStructuredScores((s) => ({ ...s, lirads: { ...s.lirads, category: cat } }))}
+                                    style={{ padding: '3px 8px', fontSize: 11 }}
+                                  >{cat}</button>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Chest X-Ray structured findings */}
+                          {study?.modality === 'CR' || study?.modality === 'DX' ? (
+                            <div>
+                              <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--gray-600)' }}>Rx Tórax — Hallazgos</label>
+                              <div style={{ display: 'flex', gap: 6, marginTop: 4, flexWrap: 'wrap' }}>
+                                {[
+                                  { key: 'opacity',          label: 'Opacidad' },
+                                  { key: 'pleuralEffusion',  label: 'Derrame pleural' },
+                                  { key: 'pneumothorax',     label: 'Neumotórax' },
+                                  { key: 'cardiomegaly',     label: 'Cardiomegalia' },
+                                  { key: 'infiltrate',       label: 'Infiltrado' },
+                                  { key: 'consolidation',    label: 'Consolidación' },
+                                  { key: 'atelectasis',      label: 'Atelectasia' },
+                                ].map(({ key, label }) => (
+                                  <button key={key}
+                                    className={`btn btn-sm ${(structuredScores.chest as any)?.[key] ? 'btn-primary' : 'btn-ghost'}`}
+                                    onClick={() => setStructuredScores((s) => ({
+                                      ...s, chest: { ...s.chest, [key]: !(s.chest as any)?.[key] }
+                                    }))}
+                                    style={{ padding: '3px 8px', fontSize: 11 }}
+                                  >{label}</button>
+                                ))}
+                              </div>
+                            </div>
+                          ) : null}
+
+                          {Object.keys(structuredScores).length === 0 && (
+                            <p style={{ fontSize: 11, color: 'var(--gray-400)', margin: 0 }}>
+                              Las puntuaciones se muestran según la modalidad del estudio (BI-RADS para MG/US, TI-RADS para US, PI-RADS para MR, etc.)
+                            </p>
+                          )}
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
                 </div>
 
                 {/* IA Tools — collapsible */}
@@ -1227,6 +1793,149 @@ export function StudyDetailPage() {
           </div>
         </div>
       )}
+
+      {/* ── Sección 4: Modal de confirmación de firma ───────────────────────── */}
+      {showSignModal && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ background: '#fff', borderRadius: 12, padding: 24, width: 420, maxWidth: '90vw', boxShadow: '0 16px 48px rgba(0,0,0,0.2)' }}>
+            <h3 style={{ margin: '0 0 8px', color: 'var(--gray-800)', fontSize: 16 }}>✍ Confirmar firma del informe</h3>
+            <p style={{ fontSize: 12, color: 'var(--gray-500)', margin: '0 0 16px', lineHeight: 1.5 }}>
+              La firma de un informe médico es un <strong>acto clínico-legal</strong>. Ingrese su contraseña
+              para confirmar su identidad antes de firmar.
+            </p>
+            <div className="form-group">
+              <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--gray-600)' }}>Contraseña *</label>
+              <input
+                type="password"
+                value={signPassword}
+                onChange={(e) => setSignPassword(e.target.value)}
+                placeholder="Ingrese su contraseña"
+                style={{ width: '100%', fontSize: 13, padding: '8px 10px', border: '1.5px solid var(--gray-300)', borderRadius: 8 }}
+                onKeyDown={(e) => { if (e.key === 'Enter') signReport(); }}
+                autoFocus
+              />
+            </div>
+            <div style={{ display: 'flex', gap: 8, marginTop: 16, justifyContent: 'flex-end' }}>
+              <button className="btn btn-ghost" onClick={() => { setShowSignModal(false); setSignPassword(''); }} disabled={signing}>Cancelar</button>
+              <button className="btn btn-primary" onClick={signReport} disabled={!signPassword.trim() || signing}>
+                {signing ? 'Firmando...' : '✍ Firmar informe'}
+              </button>
+            </div>
+            <div style={{ marginTop: 12, fontSize: 10, color: 'var(--gray-400)', lineHeight: 1.4, borderTop: '1px solid var(--gray-200)', paddingTop: 10 }}>
+              FIRMA ELECTRÓNICA SIMPLE (Ley 25.506) — No constituye firma digital con plena validez legal (ANMAT Disp. 7304/2012).
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Sección 1: Modal de hallazgo crítico ────────────────────────────── */}
+      {showCriticalModal && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ background: '#fff', borderRadius: 12, padding: 24, width: 460, maxWidth: '90vw', boxShadow: '0 16px 48px rgba(0,0,0,0.2)' }}>
+            <h3 style={{ margin: '0 0 8px', color: '#dc2626', fontSize: 16 }}>🚨 Marcar hallazgo crítico / STAT</h3>
+            <p style={{ fontSize: 12, color: 'var(--gray-500)', margin: '0 0 16px', lineHeight: 1.5 }}>
+              Se enviará una <strong>notificación inmediata</strong> (email + push) al médico solicitante.
+              Se registrará la hora y el destinatario según el estándar <strong>ACR Practice Parameter</strong>.
+            </p>
+            <div className="form-group">
+              <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--gray-600)' }}>Descripción del hallazgo crítico *</label>
+              <textarea
+                value={criticalReason}
+                onChange={(e) => setCriticalReason(e.target.value)}
+                placeholder="Ej: Neumotórax a tensión. Embolia pulmonar masiva. Masa de 4cm en lóbulo superior derecho..."
+                rows={3}
+                style={{ width: '100%', fontSize: 13, padding: '8px 10px', border: '1.5px solid #fca5a5', borderRadius: 8 }}
+              />
+            </div>
+            <div style={{ display: 'flex', gap: 8, marginTop: 16, justifyContent: 'flex-end' }}>
+              <button className="btn btn-ghost" onClick={() => { setShowCriticalModal(false); setCriticalReason(''); }} disabled={markingCritical}>Cancelar</button>
+              <button
+                onClick={markCritical}
+                disabled={!criticalReason.trim() || markingCritical}
+                style={{ background: '#dc2626', color: '#fff', border: 'none', borderRadius: 6, padding: '8px 16px', cursor: 'pointer', fontWeight: 600 }}
+              >
+                {markingCritical ? 'Marcando...' : '🚨 Marcar como CRÍTICO y notificar'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Sección 20: Modal de vista previa del PDF ────────────────────────── */}
+      {showPdfPreview && report?.pdfPath && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ background: '#fff', borderRadius: 12, width: '90vw', height: '90vh', display: 'flex', flexDirection: 'column', boxShadow: '0 24px 64px rgba(0,0,0,0.3)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderBottom: '1px solid var(--gray-200)' }}>
+              <h3 style={{ margin: 0, fontSize: 15 }}>👁 Vista previa del PDF</h3>
+              <button className="btn btn-ghost btn-sm" onClick={() => setShowPdfPreview(false)}>✕ Cerrar</button>
+            </div>
+            <iframe
+              src={`${getFilesBaseUrl()}/${report.pdfPath}?token=${getAccessToken()}`}
+              style={{ flex: 1, border: 'none', borderRadius: '0 0 12px 12px' }}
+              title="Vista previa del informe"
+            />
+          </div>
+        </div>
+      )}
+
+      {/* ── Sección 12: Modal de revisión por pares ─────────────────────────── */}
+      {showPeerReviewModal && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ background: '#fff', borderRadius: 12, padding: 24, width: 460, maxWidth: '90vw', boxShadow: '0 16px 48px rgba(0,0,0,0.2)' }}>
+            <h3 style={{ margin: '0 0 8px', color: '#4338ca', fontSize: 16 }}>👥 Revisión por pares</h3>
+            <p style={{ fontSize: 12, color: 'var(--gray-500)', margin: '0 0 16px', lineHeight: 1.5 }}>
+              Registre su revisión del informe. El médico informante recibirá una notificación.
+            </p>
+            <div className="form-group">
+              <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--gray-600)' }}>Estado de revisión</label>
+              <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+                {(['REVIEWED', 'DISCREPANT'] as const).map((s) => (
+                  <button key={s}
+                    className={`btn btn-sm ${peerReviewStatus === s ? 'btn-primary' : 'btn-ghost'}`}
+                    onClick={() => setPeerReviewStatus(s)}
+                    style={{ flex: 1, justifyContent: 'center' }}
+                  >
+                    {s === 'REVIEWED' ? '✓ Concordante' : '⚠ Discrepante'}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {peerReviewStatus === 'DISCREPANT' && (
+              <div className="form-group">
+                <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--gray-600)' }}>Nivel de discrepancia</label>
+                <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+                  {(['MINOR', 'MAJOR', 'CRITICAL'] as const).map((l) => (
+                    <button key={l}
+                      className={`btn btn-sm ${peerReviewLevel === l ? 'btn-primary' : 'btn-ghost'}`}
+                      onClick={() => setPeerReviewLevel(l)}
+                      style={{ flex: 1, justifyContent: 'center', fontSize: 11 }}
+                    >
+                      {l === 'MINOR' ? 'Menor' : l === 'MAJOR' ? 'Mayor' : 'Crítica'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            <div className="form-group">
+              <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--gray-600)' }}>Comentario (opcional)</label>
+              <textarea
+                value={peerReviewComment}
+                onChange={(e) => setPeerReviewComment(e.target.value)}
+                placeholder="Describa la discrepancia o comentarios relevantes..."
+                rows={3}
+                style={{ width: '100%', fontSize: 13, padding: '8px 10px', border: '1.5px solid var(--gray-300)', borderRadius: 8 }}
+              />
+            </div>
+            <div style={{ display: 'flex', gap: 8, marginTop: 16, justifyContent: 'flex-end' }}>
+              <button className="btn btn-ghost" onClick={() => setShowPeerReviewModal(false)} disabled={submittingPeerReview}>Cancelar</button>
+              <button className="btn btn-primary" onClick={submitPeerReview} disabled={submittingPeerReview}>
+                {submittingPeerReview ? 'Registrando...' : 'Registrar revisión'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </AppLayout>
   );
 }
@@ -1267,4 +1976,49 @@ function StudyStatusBadge({ status }: { status: string }) {
 function formatDate(iso: string): string {
   if (!iso) return '—';
   return new Date(iso).toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', year: 'numeric' });
+}
+
+// ── Sección 19: SpellCheckBadge — shows misspelling count with expandable list ─
+
+function SpellCheckBadge({ errors }: { errors: SpellError[] }) {
+  const [expanded, setExpanded] = useState(false);
+  if (errors.length === 0) return null;
+  return (
+    <div style={{ marginTop: 4 }}>
+      <button
+        type="button"
+        onClick={() => setExpanded((p) => !p)}
+        style={{
+          fontSize: 11, color: '#92400e', background: '#fef3c7',
+          border: '1px solid #fcd34d', borderRadius: 4,
+          padding: '2px 8px', cursor: 'pointer',
+        }}
+      >
+        ⚠ {errors.length} posible{errors.length > 1 ? 's' : ''} error{errors.length > 1 ? 'es' : ''} ortográfico{errors.length > 1 ? 's' : ''} {expanded ? '▲' : '▼'}
+      </button>
+      {expanded && (
+        <div style={{
+          marginTop: 4, padding: '6px 10px', background: '#fffbeb',
+          border: '1px solid #fcd34d', borderRadius: 4, fontSize: 12,
+        }}>
+          {errors.map((err, i) => (
+            <div key={i} style={{ marginBottom: 4 }}>
+              <span style={{ color: '#92400e', fontWeight: 600 }}>"{err.word}"</span>
+              {err.suggestions.length > 0 && (
+                <span style={{ color: '#374151' }}>
+                  {' '}→ sugerir: <em>{err.suggestions.join(', ')}</em>
+                </span>
+              )}
+            </div>
+          ))}
+          <div style={{ marginTop: 6, color: '#78350f', fontSize: 11 }}>
+            💡 El corrector del navegador (lang="es") también está activo.
+            Para ver sugerencias: haga clic derecho sobre la palabra subrayada,
+            o use el menú contextual del teclado (Shift+F10 / tecla Aplicación).
+            Para agregar un término médico al diccionario: clic derecho → "Agregar al diccionario".
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }

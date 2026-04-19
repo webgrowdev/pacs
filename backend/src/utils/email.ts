@@ -74,6 +74,75 @@ export async function sendReportFinalizedEmail(
   });
 }
 
+// ─── Sección 1: Critical finding alert (to requesting doctor) ────────────────
+export async function sendCriticalFindingEmail(
+  requestingDoctorEmail: string,
+  requestingDoctorName: string,
+  data: {
+    reportId:    string;
+    patientName: string;
+    modality:    string;
+    reason:      string;
+    doctorName:  string;
+  }
+): Promise<void> {
+  const reportUrl = `${env.APP_BASE_URL}/reports/${data.reportId}/verify`;
+  await sendEmail({
+    to:      requestingDoctorEmail,
+    subject: `[PACSMed] 🚨 HALLAZGO CRÍTICO — ${data.patientName} — ${data.modality}`,
+    html: `
+      <div style="background:#fef2f2;border-left:4px solid #dc2626;padding:16px;margin-bottom:16px;">
+        <strong style="color:#dc2626;font-size:16px;">🚨 HALLAZGO CRÍTICO / STAT</strong>
+      </div>
+      <p>Dr/a. ${requestingDoctorName},</p>
+      <p>Se ha detectado un hallazgo crítico en el estudio de su paciente que requiere atención inmediata.</p>
+      <table style="border-collapse:collapse;width:100%;max-width:500px;">
+        <tr><td style="padding:6px;font-weight:bold;">Paciente:</td><td style="padding:6px;">${data.patientName}</td></tr>
+        <tr><td style="padding:6px;font-weight:bold;">Modalidad:</td><td style="padding:6px;">${data.modality}</td></tr>
+        <tr><td style="padding:6px;font-weight:bold;">Hallazgo:</td><td style="padding:6px;color:#dc2626;">${data.reason}</td></tr>
+        <tr><td style="padding:6px;font-weight:bold;">Informado por:</td><td style="padding:6px;">${data.doctorName}</td></tr>
+      </table>
+      <p style="margin-top:16px;">
+        <a href="${reportUrl}" style="background:#1e3a5f;color:#fff;padding:10px 20px;text-decoration:none;border-radius:4px;">
+          Ver informe
+        </a>
+      </p>
+      <p><small>
+        Este mensaje fue generado automáticamente por PACSMed.
+        Se requiere documentación del reconocimiento de esta comunicación urgente
+        según el estándar ACR Practice Parameter para comunicación de hallazgos críticos.
+      </small></p>
+    `
+  });
+}
+
+// ─── Sección 13: Distribución automática post-firma al médico solicitante ─────
+export async function sendSignedReportEmail(
+  requestingDoctorEmail: string,
+  requestingDoctorName: string,
+  report: { id: string; pdfPath?: string | null }
+): Promise<void> {
+  const reportUrl = `${env.APP_BASE_URL}/reports/${report.id}/verify`;
+  await sendEmail({
+    to:      requestingDoctorEmail,
+    subject: `[PACSMed] Informe firmado disponible — Nº ${report.id.slice(0, 8).toUpperCase()}`,
+    html: `
+      <p>Dr/a. ${requestingDoctorName},</p>
+      <p>El informe radiológico correspondiente a su solicitud ha sido firmado y está disponible.</p>
+      <p>Informe Nº: <strong>${report.id.slice(0, 8).toUpperCase()}</strong></p>
+      <p>
+        <a href="${reportUrl}" style="background:#1e3a5f;color:#fff;padding:10px 20px;text-decoration:none;border-radius:4px;">
+          Ver y verificar informe
+        </a>
+      </p>
+      <p><small>
+        Este mensaje fue generado automáticamente por PACSMed.
+        El informe incluye un código QR de verificación en el pie de página.
+      </small></p>
+    `
+  });
+}
+
 // ─── Portal access granted (to patient) ──────────────────────────────────────
 // SECURITY: The temporary password is auto-generated, NOT chosen by the admin.
 //           The patient MUST change it on first login (mustChangePassword=true).

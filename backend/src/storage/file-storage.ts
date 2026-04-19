@@ -34,3 +34,12 @@ export function toFileUrl(relativePath: string, baseUrl: string): string {
   const normalized = relativePath.replace(/\\/g, '/');
   return `${baseUrl}/files/${normalized}`;
 }
+
+/**
+ * Resolves a storage-relative path to an absolute filesystem path.
+ * All DicomFile.filePath values are stored relative to STORAGE_ROOT.
+ */
+export function resolveStoragePath(relativePath: string): string {
+  if (path.isAbsolute(relativePath)) return relativePath;
+  return path.resolve(process.cwd(), env.STORAGE_ROOT, relativePath);
+}

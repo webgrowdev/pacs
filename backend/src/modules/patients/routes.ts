@@ -142,3 +142,59 @@ patientsRouter.put('/:id', requireRole('ADMIN') as any, async (req: AuthRequest,
     return res.status(500).json({ message: 'Error al actualizar paciente' });
   }
 });
+
+// ─── Sección 8: Historial de estudios e informes del paciente ────────────────
+
+/**
+ * GET /patients/:id/history — Returns patient study and report history.
+ * Used by the "Estudios previos de comparación" panel in the report editor.
+ */
+patientsRouter.get('/:id/history', requireRole('ADMIN', 'DOCTOR') as any, async (req: AuthRequest, res: any) => {
+  try {
+    const idOrCode = String(req.params.id);
+    // Support lookup by either UUID (id) or internalCode
+    const patient = await prisma.patient.findFirst({
+      where: {
+        OR: [
+          { id: idOrCode },
+          { internalCode: idOrCode }
+        ]
+      }
+    });
+    if (!patient) return res.status(404).json({ message: 'Paciente no encontrado' });
+
+    const studies = await prisma.study.findMany({
+      where:   { patientId: patient.id },
+      orderBy: { studyDate: 'desc' },
+      take:    20,
+      select: {
+        id:          true,
+        modality:    true,
+        studyDate:   true,
+        description: true,
+        status:      true,
+        reports: {
+          where:   { isAddendum: false },
+          orderBy: { createdAt: 'desc' },
+          take:    1,
+          select: {
+            id:          true,
+            status:      true,
+            clinicalIndication: true,
+            findings:    true,
+            conclusion:  true,
+            finalizedAt: true,
+            signedAt:    true,
+            pdfPath:     true,
+            doctor:      { select: { firstName: true, lastName: true } }
+          }
+        }
+      }
+    });
+
+    return res.json({ patientId: patient.id, studies });
+  } catch (err) {
+    console.error('[PATIENTS/HISTORY]', err);
+    return res.status(500).json({ message: 'Error al obtener historial del paciente' });
+  }
+});

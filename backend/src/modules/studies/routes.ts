@@ -179,6 +179,7 @@ const uploadSchema = z.object({
   description: z.string().max(500).optional(),
   assignedDoctorId: z.string().optional(),
   requestingDoctorName: z.string().max(200).optional(),
+  requestingDoctorEmail: z.string().email().optional(),
   insuranceOrderNumber: z.string().max(100).optional()
 });
 
@@ -190,7 +191,7 @@ studiesRouter.post('/upload', requireRole('ADMIN', 'DOCTOR') as any, upload.arra
   const files = (req.files as Express.Multer.File[]) || [];
   if (!files.length) return res.status(400).json({ message: 'Debe subir al menos un archivo DICOM, ZIP o TAR' });
 
-  const { patientId, modality, studyDate, description, assignedDoctorId, requestingDoctorName, insuranceOrderNumber } = parsedBody.data;
+  const { patientId, modality, studyDate, description, assignedDoctorId, requestingDoctorName, requestingDoctorEmail, insuranceOrderNumber } = parsedBody.data;
 
   // Verificar que el paciente existe
   try {
@@ -214,6 +215,7 @@ studiesRouter.post('/upload', requireRole('ADMIN', 'DOCTOR') as any, upload.arra
         description: description || null,
         assignedDoctorId: assignedDoctorId || null,
         requestingDoctorName: requestingDoctorName || null,
+        requestingDoctorEmail: requestingDoctorEmail || null,
         insuranceOrderNumber: insuranceOrderNumber || null,
         uploadedById: req.user!.sub
       }
@@ -480,5 +482,57 @@ studiesRouter.patch('/:id/patient', requireRole('ADMIN') as any, async (req: Aut
     if (err?.code === 'P2025') return res.status(404).json({ message: 'Estudio no encontrado' });
     console.error('[STUDIES/PATCH/PATIENT]', err);
     return res.status(500).json({ message: 'Error al reasignar paciente' });
+  }
+});
+
+// ─── Sección 9: Dosis de radiación ───────────────────────────────────────────
+
+/**
+ * PATCH /studies/:id/radiation-dose — Stores radiation dose data for a study.
+ * Accepts CTDIvol, DLP, and effective dose (from DICOM RDSR or manual entry).
+ */
+studiesRouter.patch('/:id/radiation-dose', requireRole('ADMIN', 'DOCTOR') as any, async (req: AuthRequest, res: any) => {
+  const { z } = await import('zod');
+  const schema = z.object({
+    ctdiVol:      z.number().nonnegative().optional(),
+    dlp:          z.number().nonnegative().optional(),
+    effectiveDose: z.number().nonnegative().optional(),
+    source:       z.enum(['DICOM_RDSR', 'manual']).optional()
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ message: 'Payload inválido', errors: parsed.error.flatten() });
+
+  try {
+    const study = await prisma.study.findUnique({ where: { id: String(req.params.id) } });
+    if (!study) return res.status(404).json({ message: 'Estudio no encontrado' });
+
+    const updated = await prisma.study.update({
+      where: { id: study.id },
+      data:  { radiationDoseJson: parsed.data }
+    });
+
+    const { logAudit } = await import('../../middleware/audit.js');
+    await logAudit(req as any, 'STUDY_RADIATION_DOSE_UPDATED', 'STUDY', study.id, parsed.data);
+
+    return res.json(updated);
+  } catch (err) {
+    console.error('[STUDIES/RADIATION-DOSE]', err);
+    return res.status(500).json({ message: 'Error al actualizar dosis de radiación' });
+  }
+});
+
+// ─── Sección 9: Dosis de radiación (GET) ─────────────────────────────────────
+
+studiesRouter.get('/:id/radiation-dose', requireRole('ADMIN', 'DOCTOR') as any, async (req: AuthRequest, res: any) => {
+  try {
+    const study = await prisma.study.findUnique({
+      where:  { id: String(req.params.id) },
+      select: { id: true, modality: true, radiationDoseJson: true }
+    });
+    if (!study) return res.status(404).json({ message: 'Estudio no encontrado' });
+    return res.json({ studyId: study.id, modality: study.modality, radiationDose: study.radiationDoseJson });
+  } catch (err) {
+    console.error('[STUDIES/RADIATION-DOSE/GET]', err);
+    return res.status(500).json({ message: 'Error al obtener dosis de radiación' });
   }
 });
