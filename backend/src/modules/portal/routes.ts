@@ -45,7 +45,7 @@ portalRouter.get('/my-results', requireRole('PATIENT') as any, async (req: AuthR
       orderBy: { studyDate: 'desc' }
     });
 
-    await logAudit(req, 'PORTAL_ACCESS', 'PATIENT', access.patientId);
+    await logAudit(req, 'PORTAL_ACCESS', 'PATIENT', access.patientId, undefined, { eventActionCode: 'R', participantObjectId: access.patientId, participantObjectTypeCode: 1 });
 
     return res.json(
       studies.map((s) => ({

@@ -259,7 +259,7 @@ reportsRouter.post('/', requireRole('DOCTOR', 'ADMIN') as any, async (req: AuthR
       studyId:          parsed.data.studyId,
       measurementCount: measData?.length ?? 0,
       aiUsed:           parsed.data.aiUsed ?? false
-    });
+    }, { eventActionCode: 'C' });
     return res.status(201).json(report);
   } catch (err) {
     console.error('[REPORTS/POST]', err);
@@ -509,7 +509,7 @@ reportsRouter.post('/:id/finalize', requireRole('DOCTOR', 'ADMIN') as any, async
       pdfPath:        pdfRelativePath,
       contentHash,
       patientNotified: !!patient.email
-    });
+    }, { eventActionCode: 'E', participantObjectId: patient.id, participantObjectTypeCode: 1 });
 
     // PENDIENTE 3: HL7 ORU^R01 outbound
     if (env.HL7_ENABLED && env.HL7_HOST) {
@@ -1064,7 +1064,7 @@ reportsRouter.post('/:id/mark-critical', requireRole('DOCTOR', 'ADMIN') as any, 
       reason:                 parsed.data.reason,
       requestingDoctorEmail:  requestingDoctorEmail ?? null,
       notifiedAt:             new Date().toISOString()
-    });
+    }, { eventActionCode: 'E', eventOutcome: 0 });
 
     return res.json({ ...updated, criticalNotified: !!requestingDoctorEmail });
   } catch (err) {

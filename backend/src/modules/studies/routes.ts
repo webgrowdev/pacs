@@ -164,7 +164,7 @@ studiesRouter.get('/:id', requireRole('ADMIN', 'DOCTOR') as any, async (req: Aut
       return res.status(403).json({ message: 'No autorizado para este estudio' });
     }
 
-    await logAudit(req, 'STUDY_VIEWED', 'STUDY', study.id);
+    await logAudit(req, 'STUDY_VIEWED', 'STUDY', study.id, undefined, { eventActionCode: 'R', participantObjectId: study.patient.id, participantObjectTypeCode: 1 });
     return res.json(study);
   } catch (err) {
     console.error('[STUDIES/GET/:id]', err);

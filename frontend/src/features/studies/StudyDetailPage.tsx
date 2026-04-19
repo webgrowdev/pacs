@@ -229,6 +229,14 @@ export function StudyDetailPage() {
   // PDF Preview modal (Sección 20)
   const [showPdfPreview,    setShowPdfPreview]    = useState(false);
 
+  // De-identification for teaching (PENDIENTE 4)
+  const [deidentifying,     setDeidentifying]     = useState(false);
+
+  // Remote DICOM studies via Orthanc (PENDIENTE 9)
+  const [remoteStudies,     setRemoteStudies]     = useState<any[] | null>(null);
+  const [remoteAvailable,   setRemoteAvailable]   = useState<boolean | null>(null);
+  const [remoteLoading,     setRemoteLoading]     = useState(false);
+
   // Patient history panel (Sección 8)
   const [showHistoryPanel,  setShowHistoryPanel]  = useState(false);
   const [patientHistory,    setPatientHistory]    = useState<PatientHistoryStudy[]>([]);
@@ -546,6 +554,20 @@ export function StudyDetailPage() {
       setPatientHistory([]);
     } finally {
       setHistoryLoading(false);
+    }
+  };
+
+  const loadRemoteStudies = async () => {
+    if (!study) return;
+    setRemoteLoading(true);
+    try {
+      const { data } = await api.get(`/studies/${study.id}/remote-prior-studies`);
+      setRemoteAvailable(data.available);
+      setRemoteStudies(data.available ? (data.data ?? []) : null);
+    } catch {
+      setRemoteAvailable(false);
+    } finally {
+      setRemoteLoading(false);
     }
   };
 
@@ -1155,6 +1177,29 @@ export function StudyDetailPage() {
                   </a>
                 </div>
 
+                {/* PENDIENTE 4: PHI De-identification for teaching — ADMIN only */}
+                {user?.role === 'ADMIN' && (
+                  <div style={{ borderTop: '1px solid var(--gray-200)', paddingTop: 12, marginTop: 4 }}>
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      disabled={deidentifying}
+                      onClick={async () => {
+                        if (!window.confirm('¿Anonimizar este estudio para docencia/investigación? Se creará una copia con datos de paciente eliminados.')) return;
+                        setDeidentifying(true);
+                        try {
+                          const { data } = await api.post(`/studies/${study.id}/deidentify`, {});
+                          showMessage('success', `Estudio anonimizado. ID: ${data.anonStudyId}`);
+                        } catch (err: any) {
+                          showMessage('error', err?.response?.data?.message ?? 'Error al anonimizar');
+                        } finally { setDeidentifying(false); }
+                      }}
+                      style={{ fontSize: 12, color: '#7c3aed', borderColor: '#ddd6fe' }}
+                    >
+                      {deidentifying ? '⏳ Anonimizando...' : '🔬 Anonimizar para docencia'}
+                    </button>
+                  </div>
+                )}
+
                 {/* Addendum button — only for SIGNED reports */}
                 {report?.status === 'SIGNED' && (
                   <button
@@ -1303,6 +1348,44 @@ export function StudyDetailPage() {
                     </div>
                   </ReportSection>
                 )}
+              </div>
+
+                {/* PENDIENTE 9: Red DICOM (Orthanc) — prior studies from remote PACS */}
+                <div style={{ borderTop: '1px solid var(--gray-200)', paddingTop: 12 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--gray-600)' }}>🌐 Red DICOM (Orthanc)</div>
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      onClick={loadRemoteStudies}
+                      disabled={remoteLoading}
+                      style={{ fontSize: 11 }}
+                    >
+                      {remoteLoading ? '⏳ Consultando...' : '🔍 Buscar estudios previos'}
+                    </button>
+                  </div>
+                  {remoteAvailable === false && !remoteLoading && (
+                    <div style={{ fontSize: 12, color: 'var(--gray-400)' }}>ORTHANC_URL no está configurado.</div>
+                  )}
+                  {remoteAvailable && remoteStudies && (
+                    remoteStudies.length === 0 ? (
+                      <div style={{ fontSize: 12, color: 'var(--gray-400)' }}>No se encontraron estudios previos en Orthanc.</div>
+                    ) : (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                        {remoteStudies.map((s: any, i: number) => (
+                          <div key={i} style={{
+                            padding: '6px 10px', background: 'var(--gray-50)',
+                            borderRadius: 6, fontSize: 12, display: 'flex', gap: 12
+                          }}>
+                            <span className="badge badge-blue" style={{ fontSize: 10 }}>{s.modality}</span>
+                            <span style={{ color: 'var(--gray-700)' }}>{s.studyDate || '—'}</span>
+                            <span style={{ color: 'var(--gray-500)' }}>{s.studyDescription || 'Sin descripción'}</span>
+                            <span style={{ color: 'var(--gray-400)', marginLeft: 'auto' }}>{s.seriesCount} series · {s.imagesCount} imgs</span>
+                          </div>
+                        ))}
+                      </div>
+                    )
+                  )}
+                </div>
               </div>
 
             ) : (

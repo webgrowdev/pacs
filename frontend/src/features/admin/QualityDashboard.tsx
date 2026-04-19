@@ -17,16 +17,23 @@ interface QualityIndicators {
 }
 
 export function QualityDashboard() {
-  const [data, setData]       = useState<QualityIndicators | null>(null);
-  const [period, setPeriod]   = useState('30d');
-  const [loading, setLoading] = useState(false);
-  const [error, setError]     = useState<string | null>(null);
+  const [data, setData]             = useState<QualityIndicators | null>(null);
+  const [period, setPeriod]         = useState('30d');
+  const [loading, setLoading]       = useState(false);
+  const [error, setError]           = useState<string | null>(null);
+  const [tatBreakdown, setTatBreakdown] = useState<any[]>([]);
 
   useEffect(() => {
     setLoading(true);
     setError(null);
-    api.get(`/analytics/quality-indicators?period=${period}`)
-      .then(r => setData(r.data))
+    const days = period === '90d' ? 90 : period === '365d' ? 365 : 30;
+    const fromDate = new Date(Date.now() - days * 86400000).toISOString().split('T')[0];
+    const toDate   = new Date().toISOString().split('T')[0];
+    Promise.all([
+      api.get(`/analytics/quality-indicators?period=${period}`),
+      api.get(`/analytics/tat?from=${fromDate}&to=${toDate}`)
+    ])
+      .then(([qi, tat]) => { setData(qi.data); setTatBreakdown(tat.data?.breakdown ?? []); })
       .catch(() => setError('Error al cargar indicadores'))
       .finally(() => setLoading(false));
   }, [period]);
@@ -97,6 +104,35 @@ export function QualityDashboard() {
                   <td style={{ padding: '8px 12px', fontWeight: 600 }}>{m.modality}</td>
                   <td style={{ padding: '8px 12px' }}>{m.count}</td>
                   <td style={{ padding: '8px 12px' }}>{m.avgTat != null ? `${m.avgTat} min` : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {tatBreakdown.length > 0 && (
+        <div style={{ marginTop: 20 }}>
+          <h3 style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>TAT por médico (informes finalizados)</h3>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <thead>
+              <tr style={{ background: '#f8fafc', textAlign: 'left' }}>
+                <th style={{ padding: '8px 12px', borderBottom: '1px solid #e2e8f0' }}>Médico</th>
+                <th style={{ padding: '8px 12px', borderBottom: '1px solid #e2e8f0' }}>Informes</th>
+                <th style={{ padding: '8px 12px', borderBottom: '1px solid #e2e8f0' }}>TAT promedio</th>
+                <th style={{ padding: '8px 12px', borderBottom: '1px solid #e2e8f0' }}>Estado SLA</th>
+              </tr>
+            </thead>
+            <tbody>
+              {tatBreakdown.map((d: any) => (
+                <tr key={d.doctorId} style={{ borderBottom: '1px solid #f1f5f9' }}>
+                  <td style={{ padding: '8px 12px' }}>{d.doctorName}</td>
+                  <td style={{ padding: '8px 12px' }}>{d.count}</td>
+                  <td style={{ padding: '8px 12px' }}>{d.avg != null ? `${d.avg} min` : '—'}</td>
+                  <td style={{ padding: '8px 12px' }}>
+                    {d.avg > 120 ? <span style={{ color: '#dc2626', fontWeight: 600 }}>⚠ Sobre SLA</span>
+                                 : <span style={{ color: '#16a34a' }}>✓ OK</span>}
+                  </td>
                 </tr>
               ))}
             </tbody>

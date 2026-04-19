@@ -23,3 +23,18 @@ backupRouter.get('/status', async (_req: AuthRequest, res: any) => {
     return res.status(500).json({ message: 'Error al verificar estado del backup' });
   }
 });
+
+// POST /api/admin/backup/run — trigger backup manually
+backupRouter.post('/run', async (_req: AuthRequest, res: any) => {
+  try {
+    const { exec } = await import('node:child_process');
+    const pathMod  = await import('node:path');
+    const scriptPath = pathMod.default.resolve(process.cwd(), '../scripts/backup.sh');
+    // Fire and return immediately — backup can take minutes
+    exec(`bash "${scriptPath}"`, { timeout: 600_000 });
+    return res.json({ message: 'Backup iniciado. Verifique el estado en /api/admin/backup/status en unos minutos.' });
+  } catch (err) {
+    console.error('[BACKUP/RUN]', err);
+    return res.status(500).json({ message: 'Error al iniciar backup' });
+  }
+});
