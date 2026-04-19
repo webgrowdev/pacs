@@ -6,7 +6,7 @@
 import { randomUUID } from 'node:crypto';
 
 function hl7Date(d: Date): string {
-  return d.toISOString().replace(/[-:T]/g, '').slice(0, 12);
+  return d.toISOString().replace(/[-:T]/g, '').slice(0, 14);
 }
 
 function escapeHl7(val: string | null | undefined): string {

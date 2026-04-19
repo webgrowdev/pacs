@@ -159,7 +159,9 @@ class PacsScp extends Scp {
         const ds = new Dataset({
           PatientName: `${study.patient.lastName}^${study.patient.firstName}`,
           PatientID: study.patient.internalCode || study.patient.documentId,
-          PatientBirthDate: study.patient.dateOfBirth.toISOString().replace(/-/g, '').split('T')[0],
+          PatientBirthDate: study.patient.dateOfBirth
+            ? study.patient.dateOfBirth.toISOString().replace(/-/g, '').split('T')[0]
+            : '',
           PatientSex: study.patient.sex?.toUpperCase().charAt(0) || 'O',
           StudyInstanceUID: study.studyInstanceUid || study.id,
           AccessionNumber: study.id.slice(0, 16),

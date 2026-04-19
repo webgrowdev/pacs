@@ -1121,7 +1121,7 @@ export function StudyDetailPage() {
                         onClick={async () => {
                           try {
                             const res = await api.post(`/reports/${report.id}/acknowledge-critical`, {});
-                            setReport(prev => prev ? { ...prev, criticalAcknowledgedAt: res.data.criticalAcknowledgedAt } : prev);
+                            setReport(prev => prev ? { ...prev, criticalAcknowledgedAt: res.data.criticalAcknowledgedAt, criticalAcknowledgedById: res.data.criticalAcknowledgedById, criticalAcknowledgmentNote: res.data.criticalAcknowledgmentNote } : prev);
                           } catch { showMessage('error', 'Error al confirmar hallazgo crítico'); }
                         }}
                       >
@@ -1383,7 +1383,7 @@ export function StudyDetailPage() {
                         onClick={async () => {
                           try {
                             const res = await api.post(`/reports/${report.id}/acknowledge-critical`, {});
-                            setReport(prev => prev ? { ...prev, criticalAcknowledgedAt: res.data.criticalAcknowledgedAt } : prev);
+                            setReport(prev => prev ? { ...prev, criticalAcknowledgedAt: res.data.criticalAcknowledgedAt, criticalAcknowledgedById: res.data.criticalAcknowledgedById, criticalAcknowledgmentNote: res.data.criticalAcknowledgmentNote } : prev);
                           } catch { showMessage('error', 'Error al confirmar hallazgo crítico'); }
                         }}
                       >

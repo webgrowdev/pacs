@@ -28,7 +28,8 @@ DB_HOST=$(echo "${DATABASE_URL}" | sed -E 's|mysql://[^@]+@([^:/]+).*|\1|')
 DB_PORT=$(echo "${DATABASE_URL}" | sed -E 's|mysql://[^@]+@[^:]+:([0-9]+)/.*|\1|')
 DB_NAME=$(echo "${DATABASE_URL}" | sed -E 's|mysql://[^/]+/([^?]+).*|\1|')
 
-mysqldump -h "${DB_HOST}" -P "${DB_PORT}" -u "${DB_USER}" -p"${DB_PASS}" "${DB_NAME}" \
+export MYSQL_PWD="${DB_PASS}"
+mysqldump -h "${DB_HOST}" -P "${DB_PORT}" -u "${DB_USER}" "${DB_NAME}" \
   > "${BACKUP_ROOT}/db/pacs_${DATE}.sql"
 gzip "${BACKUP_ROOT}/db/pacs_${DATE}.sql"
 
