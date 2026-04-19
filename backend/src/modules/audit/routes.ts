@@ -6,6 +6,41 @@ import { env } from '../../config/env.js';
 export const auditRouter = Router();
 auditRouter.use(requireAuth as any, requireRole('ADMIN') as any);
 
+// GET /api/audit/logs — paginated audit log for compliance dashboard
+auditRouter.get('/logs', async (req: AuthRequest, res: any) => {
+  try {
+    const page   = Math.max(1, parseInt(String(req.query.page ?? '1')));
+    const limit  = Math.min(100, Math.max(1, parseInt(String(req.query.limit ?? '50'))));
+    const skip   = (page - 1) * limit;
+    const action = req.query.action ? String(req.query.action) : undefined;
+    const userId = req.query.userId ? String(req.query.userId) : undefined;
+    const fromRaw = req.query.from ? new Date(String(req.query.from)) : new Date(Date.now() - 30 * 86400000);
+    const toRaw   = req.query.to   ? new Date(String(req.query.to))   : new Date();
+    if (isNaN(fromRaw.getTime()) || isNaN(toRaw.getTime())) {
+      return res.status(400).json({ message: 'Parámetros from/to inválidos' });
+    }
+    const where: any = { createdAt: { gte: fromRaw, lte: toRaw } };
+    if (action) where.action = action;
+    if (userId) where.userId = userId;
+
+    const [logs, total] = await Promise.all([
+      prisma.auditLog.findMany({
+        where,
+        include: { user: { select: { email: true, firstName: true, lastName: true } } },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit
+      }),
+      prisma.auditLog.count({ where })
+    ]);
+
+    return res.json({ data: logs, total, page, limit });
+  } catch (err) {
+    console.error('[AUDIT/LOGS]', err);
+    return res.status(500).json({ message: 'Error al obtener logs' });
+  }
+});
+
 // ─── GET /api/audit/devices ───────────────────────────────────────────────────
 // Returns all equipment (AE titles) that have connected via DICOM SCP,
 // grouped by AE title with stats.  Used by the Admin monitoring panel.

@@ -140,6 +140,9 @@ interface Report {
   isCritical?:    boolean;
   criticalAt?:    string;
   criticalReason?: string;
+  criticalAcknowledgedAt?:   string;
+  criticalAcknowledgedById?: string;
+  criticalAcknowledgmentNote?: string;
   // Structured scores
   structuredScores?: StructuredScores;
   // Peer reviews
@@ -1107,6 +1110,24 @@ export function StudyDetailPage() {
                         Marcado: {new Date(report.criticalAt).toLocaleString('es-AR')}
                       </div>
                     )}
+                    {report.criticalAcknowledgedAt ? (
+                      <div style={{ color: '#166534', fontSize: 11, marginTop: 6, fontWeight: 600 }}>
+                        ✓ Recibido el {new Date(report.criticalAcknowledgedAt).toLocaleString('es-AR')}
+                      </div>
+                    ) : (
+                      <button
+                        className="btn btn-sm"
+                        style={{ marginTop: 8, background: '#dc2626', color: '#fff', border: 'none', fontSize: 11 }}
+                        onClick={async () => {
+                          try {
+                            const res = await api.post(`/reports/${report.id}/acknowledge-critical`, {});
+                            setReport(prev => prev ? { ...prev, criticalAcknowledgedAt: res.data.criticalAcknowledgedAt } : prev);
+                          } catch { showMessage('error', 'Error al confirmar hallazgo crítico'); }
+                        }}
+                      >
+                        ✅ Confirmar recepción de hallazgo crítico
+                      </button>
+                    )}
                   </div>
                 )}
 
@@ -1351,6 +1372,24 @@ export function StudyDetailPage() {
                   }}>
                     <div style={{ color: '#dc2626', fontWeight: 700, fontSize: 13 }}>🚨 HALLAZGO CRÍTICO / STAT</div>
                     {report.criticalReason && <div style={{ color: '#7f1d1d', fontSize: 12, marginTop: 4 }}>{report.criticalReason}</div>}
+                    {report.criticalAcknowledgedAt ? (
+                      <div style={{ color: '#166534', fontSize: 11, marginTop: 6, fontWeight: 600 }}>
+                        ✓ Recibido el {new Date(report.criticalAcknowledgedAt).toLocaleString('es-AR')}
+                      </div>
+                    ) : (
+                      <button
+                        className="btn btn-sm"
+                        style={{ marginTop: 8, background: '#dc2626', color: '#fff', border: 'none', fontSize: 11 }}
+                        onClick={async () => {
+                          try {
+                            const res = await api.post(`/reports/${report.id}/acknowledge-critical`, {});
+                            setReport(prev => prev ? { ...prev, criticalAcknowledgedAt: res.data.criticalAcknowledgedAt } : prev);
+                          } catch { showMessage('error', 'Error al confirmar hallazgo crítico'); }
+                        }}
+                      >
+                        ✅ Confirmar recepción de hallazgo crítico
+                      </button>
+                    )}
                   </div>
                 )}
 

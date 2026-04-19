@@ -42,7 +42,20 @@ const schema = z.object({
   EMAIL_FROM: z.string().default('PACSMed <noreply@pacsmed.local>'),
   // Integrations
   ORTHANC_URL: z.string().optional(),
-  SFTP_DROP_FOLDER: z.string().default('../sftp-drop')
+  SFTP_DROP_FOLDER: z.string().default('../sftp-drop'),
+  // MWL window
+  MWL_WINDOW_DAYS: z.coerce.number().default(7),
+  // HL7 v2 ORU^R01
+  HL7_ENABLED: z.coerce.boolean().default(false),
+  HL7_HOST: z.string().optional(),
+  HL7_PORT: z.coerce.number().default(2575),
+  HL7_SENDER_APP: z.string().default('PACS'),
+  HL7_SENDER_FACILITY: z.string().default('PACSMED'),
+  HL7_RECEIVER_APP: z.string().optional(),
+  HL7_RECEIVER_FACILITY: z.string().optional(),
+  // Backup
+  BACKUP_MAX_AGE_HOURS: z.coerce.number().default(25),
+  BACKUP_STATUS_FILE: z.string().default('/backups/pacs/last_backup.json'),
 });
 
 export const env = schema.parse(process.env);

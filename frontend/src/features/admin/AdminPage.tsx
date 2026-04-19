@@ -2,6 +2,7 @@ import { useState, FormEvent, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { AppLayout } from '../../components/AppLayout';
 import { api } from '../../lib/api';
+import { QualityDashboard } from './QualityDashboard';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -125,12 +126,13 @@ function timeAgo(iso: string): string {
 // Main page
 // ─────────────────────────────────────────────────────────────────────────────
 
-type TabId = 'monitor' | 'tutorial' | 'audit' | 'config' | 'users';
+type TabId = 'monitor' | 'tutorial' | 'audit' | 'config' | 'users' | 'quality';
 
 const TABS: Array<{ id: TabId; label: string; icon: string }> = [
   { id: 'monitor',  label: 'Equipos conectados', icon: '📡' },
   { id: 'tutorial', label: 'Tutorial de conexión', icon: '📋' },
   { id: 'audit',    label: 'Auditoría',           icon: '📊' },
+  { id: 'quality',  label: 'Calidad',             icon: '🏥' },
   { id: 'config',   label: 'Configuración',        icon: '⚙' },
   { id: 'users',    label: 'Usuarios',             icon: '👤' },
 ];
@@ -195,6 +197,7 @@ export function AdminPage() {
       {activeTab === 'monitor'  && <MonitorTab />}
       {activeTab === 'tutorial' && <TutorialTab />}
       {activeTab === 'audit'    && <AuditTab />}
+      {activeTab === 'quality'  && <QualityDashboard />}
       {activeTab === 'config'   && <ConfigTab />}
       {activeTab === 'users'    && <UsersTab />}
     </AppLayout>

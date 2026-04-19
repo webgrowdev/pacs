@@ -13,12 +13,20 @@ import { prisma } from '../config/prisma.js';
 import { AuthRequest } from './auth.js';
 import { getClientIp } from '../utils/security.js';
 
+interface AuditOptions {
+  eventActionCode?: 'C' | 'R' | 'U' | 'D' | 'E';
+  eventOutcome?: 0 | 4 | 8 | 12;
+  participantObjectId?: string;
+  participantObjectTypeCode?: 1 | 2;
+}
+
 export async function logAudit(
   req: AuthRequest,
   action: string,
   entityType: string,
   entityId?: string,
-  payload?: object
+  payload?: object,
+  atna?: AuditOptions
 ): Promise<void> {
   try {
     await prisma.auditLog.create({
@@ -28,7 +36,12 @@ export async function logAudit(
         entityType,
         entityId,
         ipAddress:  getClientIp(req),
-        userAgent:  (req.headers['user-agent'] ?? '').slice(0, 500), // cap length
+        userAgent:  (req.headers['user-agent'] ?? '').slice(0, 500),
+        eventActionCode:           atna?.eventActionCode,
+        eventOutcome:              atna?.eventOutcome,
+        participantObjectId:       atna?.participantObjectId,
+        participantObjectTypeCode: atna?.participantObjectTypeCode,
+        networkAccessPoint:        getClientIp(req),
         payload
       }
     });
