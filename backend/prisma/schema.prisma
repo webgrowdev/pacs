@@ -68,6 +68,8 @@ model User {
   notifications       Notification[]
   refreshTokens       RefreshToken[]
   passwordResetTokens PasswordResetToken[]
+  peerReviews         PeerReview[] @relation("PeerReviewsGiven")
+  criticalNotifications CriticalNotification[] @relation("CriticalNotificationsReceived")
   createdAt           DateTime    @default(now())
   updatedAt           DateTime    @updatedAt
 }
@@ -101,8 +103,10 @@ model Study {
   status          StudyStatus     @default(UPLOADED)
   description     String?         @db.Text
   requestingDoctorName  String?                        // Médico solicitante externo
+  requestingDoctorEmail String?                        // Email del médico solicitante (para distribución automática)
   insuranceOrderNumber  String?                        // Número de orden de la cobertura
   metadataJson    Json?
+  radiationDoseJson Json?                              // CTDIvol (mGy), DLP (mGy·cm), effectiveDose (mSv)
   uploadedById    String
   uploadedBy      User            @relation("UploaderStudies", fields: [uploadedById], references: [id])
   assignedDoctorId String?
@@ -156,13 +160,20 @@ model Report {
   study             Study                @relation(fields: [studyId], references: [id])
   doctorId          String
   doctor            User                 @relation("DoctorReports", fields: [doctorId], references: [id])
+  clinicalIndication String?             @db.Text   // Indicación clínica / motivo de consulta (obligatorio)
   findings          String               @db.Text
   conclusion        String               @db.Text
   patientSummary    String?              @db.Text
   status            ReportStatus         @default(DRAFT)
   draftedAt         DateTime?
   finalizedAt       DateTime?
+  signedAt          DateTime?                        // Timestamp exacto de firma
   pdfPath           String?              @db.Text
+
+  // ─── Hallazgo crítico/STAT ────────────────────────────────────────────────
+  isCritical        Boolean              @default(false)
+  criticalAt        DateTime?            // Cuando se marcó como crítico
+  criticalReason    String?              @db.Text    // Descripción del hallazgo crítico
 
   // ─── Versioning & addendum ────────────────────────────────────────────────
   versionNumber     Int                  @default(1)
@@ -177,6 +188,9 @@ model Report {
   // ─── Content integrity ────────────────────────────────────────────────────
   signatureHash     String?              // SHA-256 of findings|conclusion stored on model
 
+  // ─── Structured scores (BI-RADS, TI-RADS, PI-RADS, LI-RADS, chest) ───────
+  structuredScores  Json?                // { birads?: {...}, tirads?: {...}, pirads?: {...}, lirads?: {...}, chest?: {...} }
+
   // ─── AI attribution ───────────────────────────────────────────────────────
   aiUsed            Boolean              @default(false)
   aiModel           String?              // e.g. "gpt-4o-mini", "local-template"
@@ -185,6 +199,8 @@ model Report {
   measurements      ReportMeasurement[]
   documents         GeneratedDocument[]
   keyImages         KeyImage[]
+  peerReviews       PeerReview[]
+  criticalNotifications CriticalNotification[]
   createdAt         DateTime             @default(now())
   updatedAt         DateTime             @updatedAt
 
@@ -403,4 +419,37 @@ model PasswordResetToken {
   createdAt DateTime  @default(now())
 
   @@index([tokenHash])
+}
+
+// ─── Revisión por pares (Peer Review) ────────────────────────────────────────
+// Un segundo radiólogo puede revisar un informe finalizado y marcar discrepancias.
+
+model PeerReview {
+  id               String   @id @default(cuid())
+  reportId         String
+  report           Report   @relation(fields: [reportId], references: [id])
+  reviewerDoctorId String
+  reviewer         User     @relation("PeerReviewsGiven", fields: [reviewerDoctorId], references: [id])
+  status           String   // "REVIEWED" | "DISCREPANT"
+  discrepancyLevel String?  // "MINOR" | "MAJOR" | "CRITICAL" — solo cuando status=DISCREPANT
+  comment          String?  @db.Text
+  createdAt        DateTime @default(now())
+
+  @@index([reportId])
+}
+
+// ─── Notificaciones de hallazgo crítico/STAT ─────────────────────────────────
+// Registro de quién recibió la notificación crítica y cuándo fue reconocida.
+
+model CriticalNotification {
+  id               String    @id @default(cuid())
+  reportId         String
+  report           Report    @relation(fields: [reportId], references: [id])
+  notifiedUserId   String
+  notifiedUser     User      @relation("CriticalNotificationsReceived", fields: [notifiedUserId], references: [id])
+  notifiedAt       DateTime  @default(now())
+  acknowledged     Boolean   @default(false)
+  acknowledgedAt   DateTime?
+
+  @@index([reportId])
 }
