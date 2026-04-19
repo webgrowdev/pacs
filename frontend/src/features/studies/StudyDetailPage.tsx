@@ -159,9 +159,11 @@ interface Study {
   studyDate: string;
   description?: string;
   status: string;
+  patientId?: string;
   requestingDoctorName?: string;
   insuranceOrderNumber?: string;
   patient: {
+    id?: string;
     firstName: string; lastName: string; internalCode: string;
     documentId: string; cuil?: string; dateOfBirth: string; sex: string;
     healthInsurance?: string; healthInsurancePlan?: string; healthInsuranceMemberId?: string;
@@ -460,13 +462,16 @@ export function StudyDetailPage() {
     if (!study) return;
     setHistoryLoading(true);
     try {
-      const { data } = await api.get(`/patients/${study.patient.internalCode ? study.id : study.id}/history`
-        .replace('/studies/', '/patients/').replace(`/${study.id}/`, `/${study.id}/`));
-      // Try the actual endpoint
-      const resp = await api.get(`/patients/${study.id}/history`).catch(async () => {
-        // Fallback: get patient id from study
-        return api.get(`/patients/${study.patient.internalCode}/history`).catch(() => ({ data: { studies: [] } }));
-      });
+      // Use the patient's ID if available, otherwise fall back to internalCode
+      const patientIdentifier = study.patient.id ?? study.patient.internalCode;
+      const resp = await api.get(`/patients/${patientIdentifier}/history`)
+        .catch(async () => {
+          // Fallback: use study patientId if present
+          if (study.patientId) {
+            return api.get(`/patients/${study.patientId}/history`);
+          }
+          return { data: { studies: [] } };
+        });
       setPatientHistory(resp.data.studies || []);
     } catch {
       setPatientHistory([]);

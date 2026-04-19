@@ -423,7 +423,7 @@ export async function generateClinicalPdf(input: PdfInput): Promise<string> {
     doc.moveDown(2);
     const sigY = doc.y;
     const sigBoxH = 60 + (input.doctorLicense ? 12 : 0) + (input.doctorSpecialty ? 12 : 0);
-    const sigBoxX = qrBuffer ? col2 - 10 : col2 - 10;
+    const sigBoxX = col2 - 10;
     const sigBoxW = qrBuffer ? 160 : 200;
     doc.rect(sigBoxX, sigY, sigBoxW, sigBoxH).fill(LIGHT_GRAY);
     let sigTextY = sigY + 8;

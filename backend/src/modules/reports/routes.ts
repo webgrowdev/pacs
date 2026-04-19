@@ -866,11 +866,13 @@ reportsRouter.post('/:id/mark-critical', requireRole('DOCTOR', 'ADMIN') as any, 
         }
       ).catch(() => {});
 
-      // Record the critical notification
+      // Record the critical notification; initially associate it with the doctor
+      // who marked the finding (the current user). It will be updated below if
+      // the requesting doctor has a user account in the system.
       const notifRecord = await prisma.criticalNotification.create({
         data: {
           reportId:      report.id,
-          notifiedUserId: req.user!.sub, // fallback to the signing doctor if no user found
+          notifiedUserId: req.user!.sub, // doctor who marked the critical finding
           notifiedAt:    new Date()
         }
       });

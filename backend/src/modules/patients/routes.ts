@@ -151,7 +151,16 @@ patientsRouter.put('/:id', requireRole('ADMIN') as any, async (req: AuthRequest,
  */
 patientsRouter.get('/:id/history', requireRole('ADMIN', 'DOCTOR') as any, async (req: AuthRequest, res: any) => {
   try {
-    const patient = await prisma.patient.findUnique({ where: { id: String(req.params.id) } });
+    const idOrCode = String(req.params.id);
+    // Support lookup by either UUID (id) or internalCode
+    const patient = await prisma.patient.findFirst({
+      where: {
+        OR: [
+          { id: idOrCode },
+          { internalCode: idOrCode }
+        ]
+      }
+    });
     if (!patient) return res.status(404).json({ message: 'Paciente no encontrado' });
 
     const studies = await prisma.study.findMany({

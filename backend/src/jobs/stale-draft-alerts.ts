@@ -8,6 +8,9 @@
 import { prisma } from '../config/prisma.js';
 import { createNotification } from '../modules/notifications/service.js';
 
+/** Milliseconds per hour, used for stale-draft threshold calculation. */
+const MILLIS_PER_HOUR = 3_600_000;
+
 /** Hours of inactivity before a DRAFT report is considered stale. */
 const STALE_DRAFT_HOURS = Number(process.env.STALE_DRAFT_HOURS ?? 4);
 
@@ -17,7 +20,7 @@ const CHECK_INTERVAL_MS = 30 * 60 * 1000;
 export function startStaleDraftAlertJob(): void {
   const run = async () => {
     try {
-      const cutoff = new Date(Date.now() - STALE_DRAFT_HOURS * 60 * 60 * 1000);
+      const cutoff = new Date(Date.now() - STALE_DRAFT_HOURS * MILLIS_PER_HOUR);
 
       const staleDrafts = await prisma.report.findMany({
         where: {
@@ -34,7 +37,7 @@ export function startStaleDraftAlertJob(): void {
 
       for (const draft of staleDrafts) {
         const hoursStale = Math.round(
-          (Date.now() - draft.updatedAt.getTime()) / 3_600_000
+          (Date.now() - draft.updatedAt.getTime()) / MILLIS_PER_HOUR
         );
         const patientName = `${draft.study.patient.lastName}, ${draft.study.patient.firstName}`;
 
