@@ -27,6 +27,9 @@ api.interceptors.request.use((config) => {
 // Endpoints that should NOT trigger auto-refresh on 401
 const NO_REFRESH_ENDPOINTS = ['/auth/login', '/auth/refresh'];
 
+// Shared promise so concurrent 401s only fire one refresh request
+let _refreshPromise: Promise<string> | null = null;
+
 api.interceptors.response.use(
   (response) => response,
   async (error) => {
@@ -41,14 +44,16 @@ api.interceptors.response.use(
     if (error.response?.status === 401 && !originalRequest._retry) {
       originalRequest._retry = true;
       try {
-        // Refresh token is sent automatically via httpOnly cookie (withCredentials=true)
-        const { data } = await axios.post(
-          `${BASE_URL}/auth/refresh`,
-          {},
-          { withCredentials: true }
-        );
-        setAccessToken(data.accessToken);
-        originalRequest.headers.Authorization = `Bearer ${data.accessToken}`;
+        // De-duplicate concurrent 401s: all waiters share the same refresh call
+        if (!_refreshPromise) {
+          _refreshPromise = axios
+            .post(`${BASE_URL}/auth/refresh`, {}, { withCredentials: true })
+            .then((r) => r.data.accessToken)
+            .finally(() => { _refreshPromise = null; });
+        }
+        const newToken = await _refreshPromise;
+        setAccessToken(newToken);
+        originalRequest.headers.Authorization = `Bearer ${newToken}`;
         return api(originalRequest);
       } catch {
         // Refresh failed — clear in-memory token, redirect to login

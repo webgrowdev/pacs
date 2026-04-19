@@ -144,6 +144,8 @@ interface Report {
   structuredScores?: StructuredScores;
   // Peer reviews
   peerReviews?:   PeerReview[];
+  // Optimistic concurrency
+  updatedAt?:     string;
 }
 
 interface ReportTemplate {
@@ -251,6 +253,10 @@ export function StudyDetailPage() {
   const [findingsSpellErrors,   setFindingsSpellErrors]   = useState<SpellError[]>([]);
   const [conclusionSpellErrors, setConclusionSpellErrors] = useState<SpellError[]>([]);
   const spellCheckRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // ── Sección 18: Voice dictation (Web Speech API) ──────────────────────
+  const [isDictating,    setIsDictating]    = useState(false);
+  const recognitionRef = useRef<any>(null);
 
   // UI state
   const [saving,              setSaving]              = useState(false);
@@ -386,7 +392,7 @@ export function StudyDetailPage() {
         aiSessions: resolvedSessions
       };
       if (report) {
-        const { data } = await api.put(`/reports/${report.id}`, payload);
+        const { data } = await api.put(`/reports/${report.id}`, { ...payload, updatedAt: report.updatedAt });
         setReport(data);
       } else {
         const { data } = await api.post('/reports', payload);
@@ -475,6 +481,46 @@ export function StudyDetailPage() {
     } finally {
       setVerifyingIntegrity(false);
     }
+  };
+
+  // ── Voice dictation (Sección 18) ─────────────────────────────────────────────
+  const startDictation = () => {
+    const SpeechRecognition: any =
+      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      showMessage('error', 'Su navegador no soporta dictado por voz (use Chrome)');
+      return;
+    }
+    const recognition = new SpeechRecognition();
+    recognition.lang = 'es-AR';
+    recognition.continuous = true;
+    recognition.interimResults = false;
+    recognition.onresult = (event: any) => {
+      const transcript = Array.from(event.results as any[])
+        .slice(event.resultIndex)
+        .filter((r: any) => r.isFinal)
+        .map((r: any) => r[0].transcript)
+        .join(' ');
+      if (transcript.trim()) {
+        setFindings((prev) => prev ? `${prev} ${transcript.trim()}` : transcript.trim());
+      }
+    };
+    recognition.onerror = (event: any) => {
+      if (event.error !== 'no-speech') {
+        showMessage('error', `Error de dictado: ${event.error}`);
+      }
+      setIsDictating(false);
+    };
+    recognition.onend = () => setIsDictating(false);
+    recognitionRef.current = recognition;
+    recognition.start();
+    setIsDictating(true);
+  };
+
+  const stopDictation = () => {
+    recognitionRef.current?.stop();
+    recognitionRef.current = null;
+    setIsDictating(false);
   };
 
   // ── Load patient history (Sección 8) ─────────────────────────────────────────
@@ -1064,6 +1110,30 @@ export function StudyDetailPage() {
                   </div>
                 )}
 
+                {/* Sección 15 & 16: FHIR R4 + DICOM SR export — available for all finalized reports */}
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <a
+                    href={`/api/reports/${report?.id}/fhir`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="btn btn-ghost btn-sm"
+                    style={{ flex: 1, justifyContent: 'center', gap: 6, fontSize: 11, borderColor: '#6366f1', color: '#4338ca', textDecoration: 'none', display: 'flex', alignItems: 'center' }}
+                    title="Descargar informe en formato FHIR R4 DiagnosticReport (JSON)"
+                  >
+                    🔗 FHIR R4
+                  </a>
+                  <a
+                    href={`/api/reports/${report?.id}/dicom-sr`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="btn btn-ghost btn-sm"
+                    style={{ flex: 1, justifyContent: 'center', gap: 6, fontSize: 11, borderColor: '#0ea5e9', color: '#0369a1', textDecoration: 'none', display: 'flex', alignItems: 'center' }}
+                    title="Descargar informe en formato DICOM Structured Report (JSON)"
+                  >
+                    📋 DICOM SR
+                  </a>
+                </div>
+
                 {/* Addendum button — only for SIGNED reports */}
                 {report?.status === 'SIGNED' && (
                   <button
@@ -1312,9 +1382,28 @@ export function StudyDetailPage() {
 
                 {/* Hallazgos */}
                 <div className="form-group" style={{ margin: 0 }}>
-                  <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--gray-600)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                    Hallazgos *
-                  </label>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                    <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--gray-600)', textTransform: 'uppercase', letterSpacing: '0.05em', margin: 0 }}>
+                      Hallazgos *
+                    </label>
+                    {/* Sección 18: Voice dictation button */}
+                    <button
+                      type="button"
+                      onClick={isDictating ? stopDictation : startDictation}
+                      disabled={isFinalized}
+                      title={isDictating ? 'Detener dictado' : 'Iniciar dictado por voz (español)'}
+                      style={{
+                        fontSize: 11, padding: '3px 10px', borderRadius: 6, cursor: 'pointer',
+                        border: `1px solid ${isDictating ? '#dc2626' : 'var(--gray-300)'}`,
+                        background: isDictating ? '#fef2f2' : 'transparent',
+                        color: isDictating ? '#dc2626' : 'var(--gray-500)',
+                        display: 'flex', alignItems: 'center', gap: 4,
+                        animation: isDictating ? 'pulse 1.5s infinite' : 'none'
+                      }}
+                    >
+                      🎤 {isDictating ? 'Detener' : 'Dictado'}
+                    </button>
+                  </div>
                   <RichTextEditor
                     value={findings}
                     onChange={setFindings}
